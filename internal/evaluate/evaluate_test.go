@@ -63,7 +63,7 @@ func TestDevelopmentCorpus(t *testing.T) {
 func TestCorpusAliases(t *testing.T) {
 	for name, source := range map[string]string{
 		"Jinja2": "{% extends 'base.html' %}\n", "HTML+Jinja": "{% extends 'base.html' %}\n",
-		"HTML+ERB": "<%= title %>\n", "HTML+PHP": "<?php\n", "Matlab": "function result = add(a,b)\n",
+		"HTML+ERB": "<%= title %>\n", "HTML+PHP": "<?php\n", "Matlab": "function result = add(a,b)\n", "fish": "#!/usr/bin/fish\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
@@ -85,5 +85,40 @@ func TestCorpusAliases(t *testing.T) {
 				t.Fatalf("files %d, unsupported %d, row %+v", report.Files, report.Unsupported, row)
 			}
 		})
+	}
+}
+
+func TestStrictAndFamilyScores(t *testing.T) {
+	root := t.TempDir()
+	for label, source := range map[string]string{
+		"Shell":       "#!/bin/bash\necho hello\n",
+		"fish":        "#!/usr/bin/fish\necho hello\n",
+		"Unsupported": "plain text\n",
+	} {
+		dir := filepath.Join(root, label)
+		if err := os.Mkdir(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "sample"), []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := evaluate.Run(root, func(req evaluate.Request) (evaluate.Response, error) {
+		if bytes.Contains(req.Content, []byte("fish")) {
+			return evaluate.Response{Language: "fish"}, nil
+		}
+		return evaluate.Response{Language: "Zsh"}, nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := report.Rows[3]
+	if report.Files != 2 || report.Unsupported != 1 {
+		t.Fatal(report.Files, report.Unsupported)
+	}
+	for _, counts := range []evaluate.Counts{row.Ours, row.Baseline} {
+		if counts.Correct != 1 || counts.FamilyCorrect != 2 || counts.Wrong != 1 {
+			t.Fatal(counts)
+		}
 	}
 }

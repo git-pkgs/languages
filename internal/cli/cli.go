@@ -59,11 +59,11 @@ func Format(a *languages.Analysis, c languages.Context, result languages.Result)
 	return o
 }
 
-// Run defaults to content-only, including when a source path is supplied.
+// Run combines content with the source path or contextual filename by default.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("languages", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	mode := flags.String("mode", "content", "content, path, or combined")
+	mode := flags.String("mode", "combined", "content, path, or combined")
 	name := flags.String("name", "", "optional contextual filename")
 	limit := flags.Int("bytes", languages.DefaultBytes, "maximum bytes to read (1..65536)")
 	prefix := flags.Bool("prefix", false, "input is already truncated; EOF does not establish object completeness")
@@ -114,7 +114,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	case pathMode:
 		r = c.Result()
 	case "combined":
-		r = languages.Combine(&a, c)
+		r = a.Detect(*name)
 	default:
 		r = a.Result()
 	}

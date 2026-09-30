@@ -31,6 +31,7 @@ type Baseline func(Request) (Response, error)
 type Counts struct {
 	Total          int `json:"total"`
 	Correct        int `json:"correct"`
+	FamilyCorrect  int `json:"family_correct"`
 	Wrong          int `json:"wrong"`
 	Ambiguous      int `json:"ambiguous"`
 	Unknown        int `json:"unknown"`
@@ -45,6 +46,9 @@ func (c *Counts) Add(expected languages.Language, result languages.Result) {
 	c.CandidateTotal += result.Candidates.Len()
 	if result.Candidates.Has(expected) {
 		c.CandidateHits++
+	}
+	if result.Language != languages.Unknown && family(result.Language) == family(expected) {
+		c.FamilyCorrect++
 	}
 	switch {
 	case result.Candidates == 0:
@@ -62,6 +66,13 @@ func (c *Counts) Add(expected languages.Language, result languages.Result) {
 			c.HighCorrect++
 		}
 	}
+}
+
+func family(l languages.Language) languages.Language {
+	if l == languages.Bash || l == languages.Zsh {
+		return languages.Shell
+	}
+	return l
 }
 
 type Row struct {
@@ -175,7 +186,7 @@ func (e *evaluator) sample(path string, expected languages.Language, sizeIndex i
 	var a languages.Analysis
 	languages.Analyze(content, complete, &a)
 	c := languages.AnalyzePath(filepath.Base(path))
-	results := [3]languages.Result{a.Result(), c.Result(), languages.Combine(&a, c)}
+	results := [3]languages.Result{a.Result(), c.Result(), a.Detect(filepath.Base(path))}
 	for m, mode := range Modes {
 		row := &e.report.Rows[m*len(Sizes)+sizeIndex]
 		r := results[m]

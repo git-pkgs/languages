@@ -1,0 +1,18 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/git-pkgs/languages
+cpu: Apple A18 Pro
+BenchmarkAnalyze1KB-6       	  697352	      1711 ns/op	 598.58 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAnalyze1KB-6       	  702195	      1682 ns/op	 608.71 MB/s	       0 B/op	       0 allocs/op
+BenchmarkAnalyze1KB-6       	  710431	      1678 ns/op	 610.29 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDetect1KB-6        	  704197	      1891 ns/op	 541.51 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDetect1KB-6        	  695422	      1817 ns/op	 563.51 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDetect1KB-6        	  681975	      1732 ns/op	 591.15 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCorpusPrefixes/content-6         	  305032	      3869 ns/op	 191.26 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCorpusPrefixes/content-6         	  305640	      3915 ns/op	 189.02 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCorpusPrefixes/content-6         	  312531	      3934 ns/op	 188.11 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCorpusPrefixes/combined-6        	  306758	      3985 ns/op	 185.70 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCorpusPrefixes/combined-6        	  306321	      4018 ns/op	 184.18 MB/s	       0 B/op	       0 allocs/op
+BenchmarkCorpusPrefixes/combined-6        	  291705	      4081 ns/op	 181.34 MB/s	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/git-pkgs/languages	15.959s

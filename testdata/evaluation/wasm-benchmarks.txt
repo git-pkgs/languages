@@ -1,0 +1,8 @@
+goos: js
+goarch: wasm
+pkg: github.com/git-pkgs/languages
+BenchmarkDetect1KB 	  225446	      5556 ns/op	 184.30 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDetect1KB 	  204240	      5230 ns/op	 195.78 MB/s	       0 B/op	       0 allocs/op
+BenchmarkDetect1KB 	  231228	      5252 ns/op	 194.95 MB/s	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/git-pkgs/languages	4.592s

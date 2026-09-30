@@ -68,6 +68,8 @@ func Parse(name string) Language {
 		return PHP
 	case "Matlab":
 		return MATLAB
+	case "fish":
+		return Fish
 	}
 	return Unknown
 }
@@ -238,8 +240,8 @@ func (c Context) Result() Result {
 	return Result{Language: c.Candidates.Only(), Candidates: c.Candidates, Confidence: Low}
 }
 
-// Combine uses a path to narrow compatible content candidates. A conflicting
-// path is retained as a conflict, never silently substituted for content evidence.
+// Combine narrows content candidates with a path. A path takes precedence over
+// weak disjoint syntax; strong contradictory evidence remains a conflict.
 func Combine(a *Analysis, c Context) Result {
 	r := a.Result()
 	if a.Binary {
@@ -258,6 +260,9 @@ func Combine(a *Analysis, c Context) Result {
 		r.Candidates = shared
 		r.Language = shared.Only()
 		return r
+	}
+	if !r.Conflict && !a.contradicts(c.Candidates) {
+		return c.Result()
 	}
 	r.Candidates |= c.Candidates
 	r.Language = Unknown

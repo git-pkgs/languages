@@ -143,7 +143,7 @@ func TestPathAndCombination(t *testing.T) {
 	if r := languages.Combine(&a, languages.AnalyzePath("src/sum.ts")); r.Language != languages.TypeScript {
 		t.Fatal(r)
 	}
-	if r := languages.Combine(&a, languages.AnalyzePath("sum.py")); !r.Conflict || r.Language != languages.Unknown {
+	if r := languages.Combine(&a, languages.AnalyzePath("sum.py")); r.Conflict || r.Language != languages.Python || r.Confidence != languages.Low {
 		t.Fatal(r)
 	}
 	if got := languages.AnalyzePath(`C:\src\Gemfile`).Result().Language; got != languages.Ruby {

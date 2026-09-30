@@ -5,6 +5,12 @@ import (
 	"github.com/git-pkgs/languages"
 )
 
+func ExampleDetect() {
+	result := languages.Detect("app.ts", []byte("const count = 1;\n"))
+	fmt.Println(result.Language)
+	// Output: TypeScript
+}
+
 func ExampleAnalyze() {
 	var content languages.Analysis
 	languages.Analyze([]byte("use strict;\nuse warnings;\n"), false, &content)

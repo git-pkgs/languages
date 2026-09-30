@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -17,12 +18,21 @@ func BenchmarkCorpusPrefixes(b *testing.B) {
 	}
 	const maxSamples = 1024
 	var inputs [][]byte
+	var names []string
 	var total int64
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if entry.IsDir() || !entry.Type().IsRegular() || entry.Name() == "provenance.jsonl" {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		label, _, found := strings.Cut(filepath.ToSlash(rel), "/")
+		if !found || languages.Parse(label) == languages.Unknown {
 			return nil
 		}
 		if len(inputs) == maxSamples {
@@ -42,6 +52,7 @@ func BenchmarkCorpusPrefixes(b *testing.B) {
 			return closeErr
 		}
 		inputs = append(inputs, buf[:n])
+		names = append(names, entry.Name())
 		total += int64(n)
 		return nil
 	})
@@ -51,12 +62,19 @@ func BenchmarkCorpusPrefixes(b *testing.B) {
 	if len(inputs) == 0 {
 		b.Fatal("no samples")
 	}
-	var a languages.Analysis
-	b.ReportAllocs()
-	b.SetBytes(total / int64(len(inputs)))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		languages.Analyze(inputs[i%len(inputs)], false, &a)
-		_ = a.Result()
+	for _, mode := range []string{"content", "combined"} {
+		b.Run(mode, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(total / int64(len(inputs)))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				index := i % len(inputs)
+				name := ""
+				if mode == "combined" {
+					name = names[index]
+				}
+				_ = languages.Detect(name, inputs[index])
+			}
+		})
 	}
 }

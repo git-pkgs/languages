@@ -23,7 +23,7 @@ func TestRuleRegistry(t *testing.T) {
 func TestParseAliases(t *testing.T) {
 	for name, want := range map[string]Language{
 		"Jinja2": Jinja, "HTML+Jinja": Jinja, "HTML+ERB": ERB,
-		"HTML+PHP": PHP, "Matlab": MATLAB, "": Unknown, "unrecognized": Unknown,
+		"HTML+PHP": PHP, "Matlab": MATLAB, "fish": Fish, "": Unknown, "unrecognized": Unknown,
 	} {
 		if got := Parse(name); got != want {
 			t.Errorf("Parse(%q) = %v, want %v", name, got, want)

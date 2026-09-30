@@ -68,3 +68,13 @@ jobs:
           GOOS: js
           GOARCH: wasm
         run: go build -o languages.wasm ./cmd/languages
+      - name: Run native module consumer
+        run: go run ./internal/wasmcheck
+      - name: Build WASM module consumer
+        env:
+          CGO_ENABLED: '0'
+          GOOS: js
+          GOARCH: wasm
+        run: go build -o languages-smoke.wasm ./internal/wasmcheck
+      - name: Run WASM module consumer
+        run: '"$(go env GOROOT)/lib/wasm/go_js_wasm_exec" languages-smoke.wasm'

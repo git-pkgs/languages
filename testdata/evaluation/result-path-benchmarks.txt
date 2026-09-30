@@ -1,0 +1,21 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/git-pkgs/languages
+cpu: Apple A18 Pro
+BenchmarkResultPath/extract-6         	  191859	      5979 ns/op	 171.26 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/extract-6         	  201790	      5954 ns/op	 171.99 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/extract-6         	  195708	      6085 ns/op	 168.29 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/intrinsic-6       	  192981	      6261 ns/op	 163.56 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/intrinsic-6       	  187748	      6284 ns/op	 162.97 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/intrinsic-6       	  191983	      6294 ns/op	 162.70 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/combined-6        	  188055	      6324 ns/op	 161.93 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/combined-6        	  190618	      6368 ns/op	 160.81 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/combined-6        	  184873	      6489 ns/op	 157.81 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/intrinsic-and-combined-6         	  185828	      6539 ns/op	 156.60 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/intrinsic-and-combined-6         	  185751	      6536 ns/op	 156.67 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/intrinsic-and-combined-6         	  182349	      6575 ns/op	 155.75 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/cached-results-6                 	12599984	        95.40 ns/op	10733.64 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/cached-results-6                 	12464644	        95.77 ns/op	10692.47 MB/s	       0 B/op	       0 allocs/op
+BenchmarkResultPath/cached-results-6                 	12414712	        96.18 ns/op	10646.89 MB/s	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/git-pkgs/languages	18.029s

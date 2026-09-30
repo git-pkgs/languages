@@ -1,0 +1,23 @@
+File: languages-comments.test
+Type: cpu
+Time: 2026-09-30 19:56:47 BST
+Duration: 3.44s, Total samples = 2.96s (86.10%)
+Showing nodes accounting for 2.91s, 98.31% of 2.96s total
+Dropped 11 nodes (cum <= 0.01s)
+Showing top 15 nodes out of 26
+      flat  flat%   sum%        cum   cum%
+     1.74s 58.78% 58.78%      2.48s 83.78%  github.com/git-pkgs/languages.detectLine
+     0.34s 11.49% 70.27%      0.71s 23.99%  github.com/git-pkgs/languages.matches
+     0.19s  6.42% 76.69%      0.19s  6.42%  runtime.memequal
+     0.15s  5.07% 81.76%      0.15s  5.07%  github.com/git-pkgs/languages.binary (inline)
+     0.09s  3.04% 84.80%      0.09s  3.04%  internal/bytealg.IndexByteString
+     0.08s  2.70% 87.50%      0.10s  3.38%  bytes.TrimRight
+     0.08s  2.70% 90.20%      0.16s  5.41%  github.com/git-pkgs/languages.typedBinding
+     0.05s  1.69% 91.89%      0.08s  2.70%  github.com/git-pkgs/languages.(*lexicalState).codeStart
+     0.03s  1.01% 92.91%      0.22s  7.43%  bytes.Equal (inline)
+     0.03s  1.01% 93.92%      2.94s 99.32%  github.com/git-pkgs/languages.Analyze
+     0.03s  1.01% 94.93%      0.03s  1.01%  github.com/git-pkgs/languages.prologClause
+     0.03s  1.01% 95.95%      0.03s  1.01%  runtime.asyncPreempt
+     0.03s  1.01% 96.96%      0.03s  1.01%  runtime.memmove
+     0.02s  0.68% 97.64%      0.02s  0.68%  bytes.makeASCIISet (inline)
+     0.02s  0.68% 98.31%      0.07s  2.36%  github.com/git-pkgs/languages.contains
