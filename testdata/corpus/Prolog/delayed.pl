@@ -1,0 +1,20 @@
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+% Copyright example
+:- use_module(library(lists)).
+ancestor(X,Y) :- parent(X,Y).

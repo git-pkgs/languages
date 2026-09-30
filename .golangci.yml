@@ -1,0 +1,10 @@
+version: "2"
+linters:
+  exclusions:
+    rules:
+      - path: _test\.go$
+        linters: [goconst]
+      - path: rules\.go$
+        linters: [goconst]
+      - path: path\.go$
+        linters: [gocyclo]
