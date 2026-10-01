@@ -7,4 +7,4 @@ linters:
       - path: rules\.go$
         linters: [goconst]
       - path: path\.go$
-        linters: [gocyclo]
+        linters: [gocyclo, goconst]

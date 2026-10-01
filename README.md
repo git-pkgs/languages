@@ -1,50 +1,142 @@
 # languages
 
-Detect programming languages from a filename and a bounded content prefix.
-Either input can be omitted. The Go module accepts 1 KiB prefixes and larger
-buffers up to 64 KiB, with candidate languages, confidence, and rule evidence.
-It runs offline, has no third-party dependencies, and supports WebAssembly.
+Detect programming languages from a filename, source content, or both. The Go
+library runs offline and supports WebAssembly. Results include candidate
+languages, confidence, and conflicting evidence.
 
 ## Install
 
-Add the module to a Go project:
+Add the module to your Go project:
 
 ```bash
 go get github.com/git-pkgs/languages
 ```
 
-The CLI is a consumer of the module. Build it with
-`CGO_ENABLED=0 go build -o /tmp/languages ./cmd/languages`.
+## Detect a language
 
-## Use
-
-Pass the filename when available. An empty name uses content alone:
+Pass a filename and source bytes to `Detect`:
 
 ```go
-result := languages.Detect("src/example.ts", prefix)
-fmt.Println(result.Language, result.Confidence)
+package main
 
-withoutName := languages.Detect("", prefix)
-fmt.Println(withoutName.Candidates)
+import (
+    "fmt"
+
+    "github.com/git-pkgs/languages"
+)
+
+func main() {
+    source := []byte("const count = 1;\n")
+    result := languages.Detect("app.ts", source)
+    fmt.Println(result.Language, result.Confidence)
+    // Output: TypeScript low
+}
 ```
 
-`Detect` performs no I/O and examines only the supplied bytes, up to `MaxBytes`
-(64 KiB). Pass at most `DefaultBytes` (1,024 bytes) for a 1 KiB budget. It treats
-the input as a prefix because a byte slice does not establish completeness.
-Larger buffers can supply more evidence without changing the call.
-
-For known completeness, rule evidence, or reuse across filenames, keep an
-`Analysis` value:
+Use an empty filename for content-only detection, or `nil` content to use the
+filename alone:
 
 ```go
+source := []byte("use strict;\nuse warnings;\n")
+fmt.Println(languages.Detect("", source).Language)      // Perl
+fmt.Println(languages.Detect("main.go", nil).Language) // Go
+```
+
+`Detect` performs no I/O and examines all supplied bytes. You can pass a prefix
+when the rest of the file is unavailable. Only the final path component is used;
+conventional filenames are case-sensitive and extensions are case-insensitive.
+The exceptions are `.C`, which selects C++, and `.H`, which has C-family candidates.
+
+For a file, use `AnalyzeReader` to read to EOF with bounded memory. Add `context`
+and `os` to your imports:
+
+```go
+func detectFile(ctx context.Context, name string) (languages.Result, error) {
+    file, err := os.Open(name)
+    if err != nil {
+        return languages.Result{}, err
+    }
+    defer file.Close()
+
+    var content languages.Analysis
+    if err := languages.AnalyzeReader(ctx, file, languages.ReadOptions{}, &content); err != nil {
+        return languages.Result{}, err
+    }
+    return content.Detect(name), nil
+}
+```
+
+Set `ReadOptions{Bytes: 1024}` to read at most 1 KiB; the default reads to EOF.
+The reader never consumes an extra byte to check for EOF, so reaching a budget
+without EOF leaves `content.Prefix` true. Use `ReadOptions{Prefix: true}` if the
+reader contains truncated input.
+
+Read errors and cancellation clear the result. Cancellation is checked between
+reads and cannot interrupt a reader blocked inside `Read`.
+
+## Handle the result
+
+`Language` is `languages.Unknown` when no single language is selected. Check
+`Candidates` to distinguish an ambiguous result from one with no selection.
+Import `encoding/json` to display candidate names:
+
+```go
+result := languages.Detect("source.pl", nil)
+switch {
+case result.Conflict:
+    fmt.Println("conflicting language evidence")
+case result.Candidates.Empty():
+    fmt.Println("no language detected")
+case result.Language == languages.Unknown:
+    names, err := json.Marshal(result.Candidates)
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("ambiguous: %s\n", names)
+default:
+    fmt.Println(result.Language)
+}
+```
+
+The example prints `ambiguous: ["Perl","Raku","Prolog"]`. Content such as
+`use strict;` can resolve the `.pl` ambiguity to Perl. Check a candidate with
+`result.Candidates.Has(languages.Perl)`, or count them with
+`result.Candidates.Len()`.
+
+`Language.String()` returns the name. `languages.Parse(name)` accepts canonical
+names and aliases without regard to case, including `common-lisp`.
+
+`Conflict` indicates disagreement between strong content evidence and the
+filename, or between a declaration and strong syntax evidence. For example, a
+Ruby shebang in `script.py` produces a conflict. Shared syntax, such as JavaScript
+that is also valid TypeScript, can be narrowed by the filename.
+
+Confidence describes the evidence supporting the result:
+
+- `none`: no content or filename selection.
+- `low`: a filename, weak syntax, statistical selection, or conflicting evidence.
+- `medium`: stronger syntax evidence.
+- `high`: a shebang or editor modeline, or multiple rules including a strong signal.
+
+For a confidence threshold, compare
+`result.Confidence.Rank() >= languages.Medium.Rank()`. High confidence can
+have several candidates, so check `Language` as well when you need a single
+selection. Confidence is not a probability. `Statistical` is true when the
+selection comes from the token classifier; these results have low confidence.
+
+## Reuse an analysis and inspect evidence
+
+Use `Analyze` when you have the complete content, need matched rules, or want to
+detect the same content under several filenames:
+
+```go
+source := []byte("use strict;\nuse warnings;\n")
 var content languages.Analysis
-languages.Analyze(prefix, false, &content)
+languages.Analyze(source, true, &content)
 
-intrinsic := content.Result()
-fmt.Println(intrinsic.Language, intrinsic.Confidence)
-
-combined := content.Detect("src/example.pl")
-fmt.Println(combined.Language, combined.Conflict)
+fmt.Println(content.Result().Language)            // Perl
+fmt.Println(content.Detect("source.pl").Language) // Perl
+fmt.Println(content.Detect("source.py").Conflict) // true
 
 for _, match := range content.Signals[:content.Count] {
     evidence := match.Evidence()
@@ -52,254 +144,198 @@ for _, match := range content.Signals[:content.Count] {
 }
 ```
 
-Pass `true` as the second argument only when the supplied bytes are the complete
-object. `Analyze` reads at most `MaxBytes` (64 KiB), even for a larger byte slice.
-`Analysis.Prefix` records whether a suffix remains unavailable. Input is neither
-copied nor retained, and callers can reuse both the input buffer and `Analysis`.
-Each concurrent call needs its own destination.
+Pass `true` only when the supplied bytes are the complete file. Use `false` for
+a prefix with an unavailable suffix. `Detect` always treats content as a prefix.
+`content.Prefix` records whether the input is incomplete, and `content.Bytes`
+records the number of original bytes examined.
 
-`AnalyzePath(path).Result()` uses the path alone. `Analysis.Detect` and `Combine`
-read an existing analysis without changing it. A Git blob or Software Heritage
-content object can therefore be analyzed without walking trees or loading paths. Consumers
-can cache that analysis by content identity and add occurrence evidence later.
-Cache keys should also identify the byte limit, completeness, and detector
-build. Numeric language and rule indices are internal to that build; use the
-evidence IDs and language names for durable reports.
+Emacs and Vim modelines are checked in the first five lines. The last five lines
+are checked when `Analyze` or `AnalyzeReader` receives the complete file.
 
-The API accepts the same prefix buffer a consumer uses for `magic` or obtains
-through bounded input handling in `peek`. Consumers such as `brief`, `outline`,
-and `proxy` can combine language evidence with physical format and the roles
-reported by `roles`. Historical scans with `history` can reuse a blob's intrinsic
-evidence across commits, then add the path at each occurrence to distinguish
-renames from language changes supported by content.
+`Analyze` resets its destination on each call and does not retain the input
+buffer. Reuse the buffer and analysis for successive files, with a separate
+destination for each concurrent call. `Result` and `Detect` read the analysis
+without changing it or rescanning the source.
 
-A consumer importing both `peek` and `languages` can share one buffer and its
-completeness flag:
+Rule evidence contains an ID, description, candidate languages, and a byte
+offset into the original input. Statistical scores have no source offsets and
+do not appear in `Signals`. Keep cached analyses in memory: the default JSON
+encoder omits their internal classifier state.
+
+## Command line
+
+Install the CLI with Go:
+
+```bash
+go install github.com/git-pkgs/languages/cmd/languages@latest
+```
+
+Make sure your Go binary directory (`GOBIN`, or `$(go env GOPATH)/bin` when unset)
+is on your `PATH`. For a file, the CLI writes JSON and combines the filename with
+content by default. Pass a file, or pipe content to stdin and supply its name
+with `-name`:
+
+```bash
+languages source.pl
+printf 'use strict;\n' | languages -name source.pl
+```
+
+Use `-mode content` to ignore the filename, or `-mode path` to inspect a filename
+without opening the file:
+
+```bash
+languages -mode content source.pl
+languages -mode path -name source.pl
+```
+
+The path-only example returns:
+
+```json
+{
+  "confidence": "low",
+  "candidates": ["Perl", "Raku", "Prolog"],
+  "bytes_examined": 0,
+  "prefix": false,
+  "path_evidence": {
+    "reason": "extension",
+    "candidates": ["Perl", "Raku", "Prolog"]
+  }
+}
+```
+
+`language` is omitted when no single language is selected. Unknown, ambiguous,
+and conflicting results exit successfully, so scripts must inspect the
+JSON. Argument, file-reading, and output errors produce a nonzero exit status.
+
+The CLI reads full files and stdin to EOF by default. Set a read budget with
+`-bytes`, or use `-bytes 0` for full input. This command reads up to 1 KiB:
+
+```bash
+languages -bytes 1024 source.pl
+```
+
+Reaching the budget without EOF sets `prefix: true`. For input that was truncated
+before reaching stdin, use `-prefix`:
+
+```bash
+languages -prefix -name source.pl < exported-prefix
+```
+
+## Directory breakdowns
+
+Pass a directory to see language totals for the whole tree and each subdirectory:
+
+```bash
+languages ./project
+```
+
+For a project with Go and TypeScript files, output looks like:
+
+```text
+project/  Go 75.0%, TypeScript 25.0% (3 files, 4.0 KiB)
+├── api/  Go 100.0% (2 files, 3.0 KiB)
+│   └── lib/  Go 100.0% (1 file, 1.0 KiB)
+└── web/  TypeScript 100.0% (1 file, 1.0 KiB)
+```
+
+Each directory includes all descendant files. Percentages use full file sizes,
+even when detection reads only a prefix. Unknown, ambiguous, conflicting, and
+binary files have separate totals and remain in the percentage denominator.
+`partial` counts files whose content exceeds the read limit.
+
+Scan a subdirectory on its own, limit the displayed depth, or request JSON:
+
+```bash
+languages ./project/api
+languages -depth 1 ./project
+languages -json ./project
+languages -bytes 1024 ./project
+```
+
+`-depth 0` shows only the root; the default shows every directory containing
+included files. Depth limits affect text and JSON output without changing the
+totals. JSON contains `path`, `summary`, and `children`; each summary contains
+file counts and byte totals, with language names under `languages`. JSON sizes
+are integer byte counts so callers can calculate their own shares.
+
+Scans work without Git metadata. They skip `.git`, symlinks, and non-regular
+files, and include untracked, ignored, vendored, and generated files. Directory
+scans use file sizes to identify complete input, including files exactly as
+large as the read limit.
+
+In Go, `Scan` accepts an `fs.FS`. Add `context` and `os` to your imports:
 
 ```go
-var claims peek.Result
-var content languages.Analysis
-peek.InspectInto(&claims, peek.Input{Bytes: prefix, Complete: complete})
-languages.Analyze(prefix, complete, &content)
-
-intrinsic := content.Result()
-combined := languages.Combine(&content, languages.AnalyzePath(filename))
-fmt.Println(claims.Claims, intrinsic.Language, combined.Language)
+tree, err := languages.Scan(context.Background(), os.DirFS("project"), languages.ScanOptions{})
+if err != nil {
+    panic(err)
+}
+fmt.Println(tree.Root().Summary)
+if api, ok := tree.Subtree("api"); ok {
+    fmt.Println(api.Summary)
+}
 ```
 
-Reuse both result values for successive inputs. The caller determines
-`complete` once and passes it to both libraries. `Result` and `Combine` each
-score the content evidence; `BenchmarkResultPath` measures extraction and the
-cost of displaying both results. Neither module needs a dependency on the other.
+Use `os.DirFS("project/api")` or `fs.Sub` to scan only a subdirectory. Set
+`ScanOptions.Bytes` for a read budget. To exclude files or directories, supply
+`ScanOptions.Exclude` with the `io/fs` import. It receives root-relative paths;
+returning true for a directory skips its contents:
 
-## Results
-
-`Language` is `Unknown` when there is no selection. `Candidates` preserves
-ambiguity and supports `Has`, `Len`, and `Only`. It contains languages supported
-by the current rules, not every language in which a fragment could be valid.
-`Conflict` reports disagreement between a shebang and strong syntax evidence,
-or between a path and strong content evidence. Compatible filename evidence
-narrows the candidates. When only weak syntax disagrees, the filename takes
-precedence at low confidence. Strong contradictions remain unresolved.
-
-Confidence categories describe the strength of the matched rules:
-
-- `none`: no rule reached the minimum score.
-- `low`: weak syntax or path evidence, or conflicting evidence.
-- `medium`: a stronger syntax signal.
-- `high`: an interpreter declaration, or multiple supporting rules.
-
-Use `r.Confidence.Rank() >= languages.Medium.Rank()` to apply a confidence
-threshold. A high-confidence result can still contain several candidates. Scores are
-hand-assigned rather than calibrated probabilities, and each rule contributes
-at most once regardless of repetition. Each content match has a rule ID,
-description, language set, and byte offset; path evidence remains in `Context`.
-
-The initial rules cover Python, Ruby, Go, Rust, Java, C, C++, Objective-C, MATLAB,
-JavaScript, TypeScript, JSX, TSX, sh, Bash, Zsh, Fish, Perl, Raku, Prolog, Common
-Lisp, Scheme, Clojure, Racket, PHP, Lua, C#, HTML, XML, Jinja, Twig, ERB, and SQL.
-Coverage within each language is partial. Common declarations, imports,
-directives, shebangs, and template markers supply the evidence.
-
-A C header can match C, C++, and Objective-C; plain JavaScript can also match
-TypeScript, JSX, and TSX. Scheme forms can match
-Racket, and Jinja/Twig markers overlap. `.pl` permits Perl, Raku, and Prolog;
-`use strict;` and `:- use_module(...)` provide different content evidence.
-An isolated Prolog fact or `print(1)` may produce no selection.
-
-The detector matches byte patterns without validating syntax. It skips comments
-and common multiline strings, but handling of heredocs and other quoting
-dialects is incomplete. Embedded languages, minified code, and fragments may
-be missed or misidentified. A comment-only prefix often yields no evidence.
-The binary flag checks for C0 control bytes except tab, newline, carriage return,
-form feed, and ESC (used in ANSI colour codes). Use a format and encoding detector
-before this package if you need file-format identification or UTF-16 decoding;
-other non-UTF-8 bytes are scanned for ASCII signals.
-
-## CLI
-
-The default combines content with the input filename or `-name`. Without a name,
-it uses content alone. Output is JSON. Omit the input file or use `-` to read stdin:
-
-```bash
-/tmp/languages source.pl
-/tmp/languages -mode path -name source.pl
-/tmp/languages -name source.pl < source.pl
-/tmp/languages -mode content source.pl
-/tmp/languages -bytes 4096 < source.pl
-/tmp/languages -prefix < exported-prefix
+```go
+options := languages.ScanOptions{
+    Exclude: func(name string, entry fs.DirEntry) bool {
+        return entry.IsDir() && entry.Name() == "vendor"
+    },
+}
 ```
 
-The default read limit is 1,024 bytes; the maximum is 65,536. No byte beyond the
-limit is consumed. If the limit is filled exactly, the CLI reports a prefix
-because it has not checked for EOF. Path mode does not open the supplied path.
-Use `-prefix` for an already truncated export, where the stream's EOF does not
-establish the end of the original object.
+Pass these options as the third argument to `Scan`. If a file cannot be read or
+the context is cancelled, the scan returns an error without a partial tree.
 
-## Evaluation
+If your application already traverses files, feed its analyses into a `Tree`
+instead of scanning again:
 
-The evaluator accepts Linguist's `samples/<language>/...` directory layout,
-including its nested `filenames` directories. Adding corpus files or new language
-directories requires no importer changes. Files for unimplemented languages are
-counted separately and excluded from accuracy totals.
-
-```bash
-go run ./cmd/evaluate -corpus testdata/corpus
-go run ./cmd/evaluate -corpus /path/to/linguist/samples -revision COMMIT \
-  -predictions /tmp/languages-predictions.jsonl > /tmp/languages-results.json
+```go
+var tree languages.Tree
+source := []byte("package main\n")
+var analysis languages.Analysis
+languages.Analyze(source, true, &analysis)
+if err := tree.Add("api/main.go", int64(len(source)), &analysis); err != nil {
+    panic(err)
+}
+fmt.Println(tree.Root().Summary)
 ```
 
-Each supported sample is evaluated at 128, 256, 512, 1,024, and 4,096 bytes, plus
-the complete file, in all three modes. Complete-file rows use `bytes: 0` and
-exclude files over 64 KiB; `oversized_complete_skipped` records the count. Prefix
-rows still include those files. No filename is passed to content-only detection.
+For prefix analyses, pass the full file size to `Add`. Paths must be unique,
+slash-separated, and relative to the tree root, without `.` or `..` components.
+You can reuse the content buffer and analysis after each call. `Root` and
+`Subtree` return independent snapshots with children sorted by path and languages
+sorted by size, then file count and name. Subtree paths remain relative to the
+original root; empty directories are omitted.
 
-The report separates exact correct labels, wrong labels, ambiguity, abstention,
-candidate-set hits, high-confidence results, and extensionless files. Strict
-scores require the canonical language label. `family_correct` also accepts
-Shell, Bash, and Zsh as equivalent selections; other labels and ambiguous
-results stay separate. Per-sample JSONL includes prefix hashes and predictions
-for inspecting failures. The bundled
-45 files are authored development fixtures, including deliberately ambiguous
-and delayed-signal examples. They are not an independent accuracy benchmark.
-Linguist's corpus is the intended larger evaluation input; preserve its source
-revision and each sample's provenance when distributing samples.
+## Limits
 
-An optional go-enry adapter is isolated in `tools/enry`, outside the library's
-module. Build it separately and pass its executable to the evaluator:
+Detection matches byte patterns and token frequencies without validating syntax.
+Comment and string handling is partial, including for heredocs. Embedded
+languages, minified code, and short fragments may be missed or misidentified.
 
-```bash
-(cd tools/enry && CGO_ENABLED=0 go build -o /tmp/languages-enry .)
-go run ./cmd/evaluate -corpus /path/to/linguist/samples \
-  -baseline /tmp/languages-enry
-```
+Language metadata, extension heuristics, and classifier training samples come
+from [Linguist]. Extension heuristics inspect the first 50 KiB through
+[scan](https://github.com/git-pkgs/scan). Syntax rules and the token classifier
+process all supplied content.
 
-For content-only comparison, the adapter first tries go-enry's filename-free
-strategies and then its classifier with all classifier languages as candidates.
-Path and combined comparisons use its normal API. This is broader than this
-package's initial language set. The JSONL protocol also allows other baseline
-executables without adding dependencies to the library.
+Binary classification and encoding recognition use
+[magic](https://github.com/git-pkgs/magic). Binary content sets `Analysis.Binary`
+and produces no language selection.
 
-`go run ./cmd/localscan -root /absolute/path/to/repos` measures traversal, bounded
-reads, and content detection across local Git repositories. Add `-exclude` for
-this repository and `-out /tmp/new-corpus-directory` to export a bounded sample
-with provenance. Sampling uses weak extension labels, excludes shared
-extensions, and caps each language at 30 files and each repository/language at
-three. Symlinks, Git metadata, dependency directories, and common build output
-directories are skipped. No source checkout is modified or fetched.
-
-An initial local sample contained 290 files across 22 language labels. At 1 KB,
-content-only detection returned 174 exact labels, one wrong label, 56 ambiguous
-results, and 59 unknowns. The go-enry adapter returned 139 exact labels. These
-are weak extension labels from one development workspace, so they do not
-establish general accuracy.
-
-The Linguist run at commit `5fbdfcb8133be2bed88bf3ce62b2335f50474525` scored 607
-files across 29 supported labels. It skipped 2,797 unmapped files and two
-symlinks; 22 files exceeded the complete-file byte limit. The supported set
-includes Linguist's lowercase `fish` label. Results are per path, without
-deduplication, and unsupported files are not analyzed for false positives.
-
-Filename-plus-content results:
-
-| Input | Files | Exact | Family correct | Wrong (strict) | Ambiguous | Unknown | go-enry exact |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 128 B | 607 | 408 | 442 | 37 | 122 | 40 | 563 |
-| 256 B | 607 | 418 | 452 | 37 | 118 | 34 | 567 |
-| 512 B | 607 | 425 | 459 | 37 | 117 | 28 | 573 |
-| 1 KiB | 607 | 441 | 475 | 37 | 108 | 21 | 587 |
-| 4 KiB | 607 | 449 | 483 | 37 | 102 | 19 | 600 |
-| Complete | 585 | 429 | 463 | 36 | 102 | 18 | 577 |
-
-At 1 KiB, strict exact identification increased from 353/607 (58.2%) to 441/607
-(72.7%) after adding filename conventions and refining weak content evidence.
-The Shell-family count increased from 371 to 475. Content-only detection now
-returns 254 exact labels, 15 wrong labels, 146 ambiguities, and 192 unknowns;
-go-enry returns 531 exact labels. Broader candidate sets for shared `use` and
-`set` syntax reduced content-only wrong labels from 20 to 15, while exact
-labels fell from 258 to 254.
-
-These are development measurements on the corpus used to inspect failures.
-go-enry's classifier is trained on Linguist samples, so its comparison is not
-held out either. Its map-based tie ordering can also change tied predictions.
-The aggregate results and provenance are in
-[`testdata/evaluation/linguist.json`](testdata/evaluation/linguist.json).
-
-## WebAssembly
-
-The module has no filesystem or process requirements. The same Go API is used
-by native consumers and WASM consumers. CI builds the CLI for `js/wasm` and
-executes a separate module consumer in native Go and Node's WebAssembly runtime,
-checking filenames, missing names, incomplete input, binary data, and byte limits.
-
-```bash
-GOOS=js GOARCH=wasm go build -o /tmp/languages-smoke.wasm ./internal/wasmcheck
-"$(go env GOROOT)/lib/wasm/go_js_wasm_exec" /tmp/languages-smoke.wasm
-```
-
-## Performance
-
-The core has fixed-size result storage, no runtime initialization, and no mutable
-shared state. Runtime work is bounded by 64 KiB and the fixed rule count. Corpus
-evaluation reads one bounded sample at a time and at most 64 directory entries
-per batch, with a maximum directory depth of 32. It does not retain all results
-or deduplicate the corpus in memory.
-
-On an Apple A18 Pro with Go 1.27.1, `Detect` took 1.73-1.89 microseconds per call
-on mixed padded 1 KiB fixtures. Filename-plus-content detection on the 607
-supported Linguist files took 3.99-4.08 microseconds per prefix, capped at 1 KiB.
-The same mixed fixtures took 5.23-5.56 microseconds in Go WASM under Node
-26.10.0. All reported zero B/op and zero allocations/op across three runs.
-
-The WASM module consumer built with default Go settings is 2,051,269 bytes,
-about 614 KB with gzip. This includes the Go runtime and smoke checks. These
-measurements come from one development machine and are not regression budgets.
-Raw native and WASM benchmark outputs accompany the evaluation report.
-
-A comment-heavy 1 KiB Python prefix took 5.95-6.09 microseconds for extraction
-alone and 6.54-6.58 microseconds for extraction plus intrinsic and combined
-results. Computing both results from cached evidence took 95-96 nanoseconds.
-All paths reported zero allocations. A CPU profile attributed about 84% of
-samples to `detectLine` and its callees, which match lines against rules.
-
-```bash
-CGO_ENABLED=0 go test ./...
-go test -race ./...
-go test -run '^$' -bench . -benchmem
-go test -run '^$' -bench BenchmarkResultPath -benchmem
-make profile
-LANGUAGES_BENCH_CORPUS=/path/to/linguist/samples go test -run '^$' \
-  -bench BenchmarkCorpusPrefixes -benchmem
-GOOS=js GOARCH=wasm go test \
-  -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" \
-  -run '^$' -bench BenchmarkDetect1KB -benchmem
-```
-
-Benchmarks cover mixed 1 KiB prefixes, 1,024-object batches, concurrent calls,
-and adversarial inputs at the byte limit. CPU and memory profiles go
-to `/tmp`; inspect them before changing the hot path. CI builds and tests with
-`CGO_ENABLED=0` and also builds the CLI for WASM.
+BOM-marked UTF-16 and UTF-32 are decoded before language analysis. Evidence
+offsets refer to the original bytes, and a prefix may end inside a code
+point. Malformed BOM-marked input is rejected. Other non-UTF-8 input is analyzed
+as bytes when magic cannot classify it; detection quality may be lower.
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). Imported [Linguist] metadata, heuristics, and sample-derived model data are
+covered by the upstream [MIT notice](LICENSE.linguist).
+
+[Linguist]: https://github.com/github-linguist/linguist

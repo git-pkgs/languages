@@ -1,10 +1,17 @@
-// Package languages identifies source languages from bounded byte prefixes and paths.
+// Package languages identifies source languages from content and paths.
 // Content analysis does not require or retain a filename or the input buffer.
 package languages
 
-import "math/bits"
+import (
+	"math/bits"
+	"unicode"
+	"unicode/utf8"
 
-type Language uint8
+	"github.com/git-pkgs/languages/internal/classifier"
+)
+
+// Language identifies a language within a detector build. Store names, not indices.
+type Language uint16
 
 const (
 	Unknown Language = iota
@@ -41,10 +48,7 @@ const (
 	ERB
 	SQL
 	Prolog
-	LanguageCount
 )
-
-var names = [...]string{"", "Python", "Ruby", "Go", "Rust", "Java", "C", "C++", "Objective-C", "MATLAB", "JavaScript", "TypeScript", "JSX", "TSX", "Shell", "Bash", "Zsh", "Fish", "Perl", "Raku", "Common Lisp", "Scheme", "Clojure", "Racket", "PHP", "Lua", "C#", "HTML", "XML", "Jinja", "Twig", "ERB", "SQL", "Prolog"}
 
 func (l Language) String() string {
 	if l >= LanguageCount {
@@ -54,36 +58,34 @@ func (l Language) String() string {
 }
 
 func Parse(name string) Language {
-	for l := Python; l < LanguageCount; l++ {
-		if l.String() == name {
-			return l
+	lo, hi := 0, len(languageAliases)
+	for lo < hi {
+		mid := lo + (hi-lo)>>1
+		entry := languageAliases[mid]
+		comparison := compareAlias(name, entry.name)
+		if comparison == 0 {
+			return entry.language
 		}
-	}
-	switch name {
-	case "Jinja2", "HTML+Jinja":
-		return Jinja
-	case "HTML+ERB":
-		return ERB
-	case "HTML+PHP":
-		return PHP
-	case "Matlab":
-		return MATLAB
-	case "fish":
-		return Fish
+		if comparison < 0 {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
 	}
 	return Unknown
 }
 
-// Set is a bounded set of candidate languages. Its order is the Language order.
-type Set uint64
-
-func (s Set) Has(l Language) bool { return l > Unknown && l < LanguageCount && s&(1<<l) != 0 }
-func (s Set) Len() int            { return bits.OnesCount64(uint64(s)) }
-func (s Set) Only() Language {
-	if s.Len() != 1 {
-		return Unknown
+func compareAlias(name, alias string) int {
+	for len(name) > 0 && len(alias) > 0 {
+		a, n := utf8.DecodeRuneInString(name)
+		b, m := utf8.DecodeRuneInString(alias)
+		a = unicode.ToLower(a)
+		if a != b {
+			return int(a - b)
+		}
+		name, alias = name[n:], alias[m:]
 	}
-	return Language(bits.TrailingZeros64(uint64(s)))
+	return len(name) - len(alias)
 }
 
 type Confidence string
@@ -108,82 +110,126 @@ func (c Confidence) Rank() int {
 // Result leaves Language empty when the evidence supports multiple candidates.
 // Confidence describes rule support, not an empirical probability.
 type Result struct {
-	Language   Language
-	Confidence Confidence
-	Candidates Set
-	Conflict   bool
+	Language    Language
+	Confidence  Confidence
+	Candidates  Set
+	Conflict    bool
+	Statistical bool
 }
 
-// MaxBytes bounds every Analyze call, even when passed a complete large file.
-const MaxBytes = 64 * 1024
-const DefaultBytes = 1024
+// DefaultBytes reads the entire file. Positive read budgets select a prefix.
+const DefaultBytes = 0
 const MaxSignals = 128
 
 // Match records the first occurrence of a rule. Offsets refer to the original bytes.
+// Rule indices are build-specific; use Evidence().ID for stored results.
 type Match struct {
 	Rule   uint16
-	Offset uint32
+	Offset uint64
 }
 
 type Evidence struct {
 	ID          string `json:"id"`
 	Description string `json:"description"`
 	Languages   Set    `json:"languages"`
-	Offset      uint32 `json:"offset"`
+	Offset      uint64 `json:"offset"`
 }
 
 func (m Match) Evidence() Evidence {
-	if int(m.Rule) >= len(rules) {
+	r := m.rule()
+	if r == nil {
 		return Evidence{}
 	}
-	r := rules[m.Rule]
 	return Evidence{ID: r.id, Description: r.description, Languages: r.languages, Offset: m.Offset}
+}
+
+func (m Match) rule() *rule {
+	if int(m.Rule) < len(rules) {
+		return &rules[m.Rule]
+	}
+	i := int(m.Rule) - len(rules)
+	if i < len(interpreterRules) {
+		return &interpreterRules[i]
+	}
+	i -= len(interpreterRules)
+	if i < len(modelineRules) {
+		return &modelineRules[i]
+	}
+	return nil
 }
 
 // Analysis is a reusable, value-copyable content result with no input references.
 // Only Signals[:Count] is populated. It can be stored with a content object's ID.
-// Prefix is true unless the caller supplied the complete object within MaxBytes.
+// Prefix is true unless the caller supplied the complete object.
+// JSON encoding omits classifier state.
 type Analysis struct {
-	Signals [MaxSignals]Match
-	Count   int
-	Bytes   int
-	Prefix  bool
-	Binary  bool
+	Signals        [MaxSignals]Match
+	Count          int
+	Bytes          int64
+	Prefix         bool
+	Binary         bool
+	classification classifier.Analysis
+	heuristics     [len(heuristicGroups)]uint16
 }
 
 func (a *Analysis) Result() Result {
+	r := a.ruleResult()
+	if !r.Conflict && r.Candidates == jsFamily && a.hasDeclaration() {
+		r.Language = JavaScript
+		r.Candidates = NewSet(JavaScript)
+	}
+	if r.Conflict || r.Confidence == High || a.hasDeclaration() {
+		return r
+	}
+	if r.Confidence == Medium && a.classification.Tokens < minimumOverrideTokens {
+		return r
+	}
+	if result := a.classify(Set{}); !result.Candidates.Empty() {
+		return result
+	}
+	return r
+}
+
+func (a *Analysis) ruleResult() Result {
+	if a.Count == 0 {
+		return Result{Confidence: None}
+	}
 	var scores [LanguageCount]uint16
 	var counts [LanguageCount]uint8
 	var explicit Set
 	var strong Set
+	var active Set
+	var best uint16
 	for _, m := range a.Signals[:a.Count] {
-		r := rules[m.Rule]
-		for l := Python; l < LanguageCount; l++ {
-			if r.languages.Has(l) {
+		r := m.rule()
+		active = active.Union(r.languages)
+		for i, word := range r.languages.words {
+			for word != 0 {
+				l := Language(i*64 + bits.TrailingZeros64(word))
+				word &= word - 1
 				scores[l] += uint16(r.weight)
 				counts[l]++
+				best = max(best, scores[l])
 			}
 		}
 		if r.weight == declaredWeight {
-			explicit |= r.languages
+			explicit = explicit.Union(r.languages)
 		}
 		if r.weight >= strongWeight {
-			strong |= r.languages
-		}
-	}
-	var best uint16
-	for _, score := range scores {
-		if score > best {
-			best = score
+			strong = strong.Union(r.languages)
 		}
 	}
 	if best < minimumScore {
 		return Result{Confidence: None}
 	}
 	var candidates Set
-	for l := Python; l < LanguageCount; l++ {
-		if scores[l] >= minimumScore && scores[l]+scoreMargin >= best {
-			candidates |= 1 << l
+	for i, word := range active.words {
+		for word != 0 {
+			l := Language(i*wordBits + bits.TrailingZeros64(word))
+			word &= word - 1
+			if scores[l] >= minimumScore && scores[l]+scoreMargin >= best {
+				candidates.add(l)
+			}
 		}
 	}
 	conf := Low
@@ -191,25 +237,31 @@ func (a *Analysis) Result() Result {
 		conf = Medium
 	}
 	// The best-scoring language meets both candidate thresholds, so candidates is nonempty.
-	if best >= highScore && (explicit&candidates != 0 || counts[candidatesFirst(candidates)] >= 2) {
+	if best >= highScore && (explicit.overlaps(candidates) || strong.overlaps(candidates) && counts[candidates.first()] >= 2) {
 		conf = High
 	}
-	conflict := explicit != 0 && explicit&candidates == 0
+	conflict := !explicit.Empty() && !explicit.overlaps(candidates)
 	conflict = conflict || a.contradicts(explicit)
 	if conflict {
-		candidates |= explicit | strong
+		candidates = candidates.Union(explicit).Union(strong)
 		conf = Low
 	}
 	return Result{Language: candidates.Only(), Confidence: conf, Candidates: candidates, Conflict: conflict}
 }
 
 func (a *Analysis) contradicts(explicit Set) bool {
-	if explicit == 0 {
+	if explicit.Empty() {
 		return false
 	}
+	if explicit.Has(Cython) {
+		explicit.add(Python)
+	}
+	if explicit.overlaps(xmlLanguages) {
+		explicit.add(XML)
+	}
 	for _, m := range a.Signals[:a.Count] {
-		r := rules[m.Rule]
-		if r.weight >= strongWeight && r.languages&explicit == 0 {
+		r := m.rule()
+		if r.weight >= strongWeight && !r.languages.overlaps(explicit) {
 			return true
 		}
 	}
@@ -225,35 +277,80 @@ const (
 	strongWeight   = 6
 )
 
-func candidatesFirst(s Set) Language { return Language(bits.TrailingZeros64(uint64(s))) }
-
 // Context is occurrence-specific evidence. No path string is retained.
 type Context struct {
 	Candidates Set
 	Reason     string
+	heuristic  uint16
 }
 
 func (c Context) Result() Result {
-	if c.Candidates == 0 {
+	if c.Candidates.Empty() {
 		return Result{Confidence: None}
 	}
 	return Result{Language: c.Candidates.Only(), Candidates: c.Candidates, Confidence: Low}
 }
 
-// Combine narrows content candidates with a path. A path takes precedence over
-// weak disjoint syntax; strong contradictory evidence remains a conflict.
+// Combine narrows content candidates with a path, preserving declaration conflicts.
 func Combine(a *Analysis, c Context) Result {
 	r := a.Result()
 	if a.Binary {
-		return Result{Confidence: None, Conflict: c.Candidates != 0}
+		return Result{Confidence: None, Conflict: !c.Candidates.Empty()}
 	}
-	if c.Candidates == 0 {
+	if c.Candidates.Empty() {
 		return r
 	}
-	if r.Candidates == 0 {
+	if c.Candidates.Has(Shell) && shellFamily.Has(r.Language) {
+		c.Candidates.add(r.Language)
+	}
+	intrinsic := a.ruleResult()
+	if a.declarationConflict(c.Candidates) {
+		intrinsic.Candidates = intrinsic.Candidates.Union(c.Candidates)
+		intrinsic.Language = Unknown
+		intrinsic.Conflict = true
+		intrinsic.Confidence = Low
+		return intrinsic
+	}
+	if intrinsic.Language != XML {
+		if heuristic := a.heuristicResult(c); !heuristic.Candidates.Empty() {
+			if heuristic.Language != Unknown {
+				return heuristic
+			}
+			c.Candidates = heuristic.Candidates
+		}
+	}
+	if !r.Conflict && !a.hasDeclaration() {
+		if classified, ok := a.classifiedContext(c, intrinsic); ok {
+			return classified
+		}
+	}
+	if result, ok := xmlContext(intrinsic, c.Candidates); ok {
+		return result
+	}
+	if !intrinsic.Conflict && intrinsic.Confidence.Rank() >= Medium.Rank() {
+		shared := intrinsic.Candidates.Intersect(c.Candidates)
+		if shared.Only() != Unknown {
+			intrinsic.Candidates = shared
+			intrinsic.Language = shared.Only()
+			return intrinsic
+		}
+	}
+	if a.contradicts(c.Candidates) {
+		intrinsic.Candidates = intrinsic.Candidates.Union(c.Candidates)
+		intrinsic.Language = Unknown
+		intrinsic.Conflict = true
+		intrinsic.Confidence = Low
+		return intrinsic
+	}
+	if !r.Conflict && !a.hasDeclaration() && c.Candidates.Len() > 1 {
+		if narrowed := a.classify(c.Candidates); !narrowed.Candidates.Empty() {
+			return narrowed
+		}
+	}
+	if r.Candidates.Empty() {
 		return c.Result()
 	}
-	if shared := r.Candidates & c.Candidates; shared != 0 {
+	if shared := r.Candidates.Intersect(c.Candidates); !shared.Empty() {
 		if r.Conflict {
 			return r
 		}
@@ -261,12 +358,40 @@ func Combine(a *Analysis, c Context) Result {
 		r.Language = shared.Only()
 		return r
 	}
-	if !r.Conflict && !a.contradicts(c.Candidates) {
+	if !r.Conflict {
 		return c.Result()
 	}
-	r.Candidates |= c.Candidates
+	r.Candidates = r.Candidates.Union(c.Candidates)
 	r.Language = Unknown
 	r.Conflict = true
 	r.Confidence = Low
 	return r
+}
+
+func xmlContext(result Result, candidates Set) (Result, bool) {
+	if result.Language != XML {
+		return Result{}, false
+	}
+	shared := candidates.Intersect(xmlLanguages)
+	if shared.Empty() {
+		return Result{}, false
+	}
+	if !shared.Has(XML) {
+		result.Candidates = shared
+		result.Language = shared.Only()
+	}
+	return result, true
+}
+
+func (a *Analysis) declarationConflict(candidates Set) bool {
+	if candidates.Has(Pod) {
+		candidates.add(Perl)
+	}
+	for _, match := range a.Signals[:a.Count] {
+		r := match.rule()
+		if (r.weight == declaredWeight || r.id == "ruby.frozen" || r.id == "perl.strict" || r.id == "perl.warnings") && !r.languages.overlaps(candidates) {
+			return true
+		}
+	}
+	return false
 }

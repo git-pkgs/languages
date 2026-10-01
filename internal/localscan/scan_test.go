@@ -97,3 +97,21 @@ func TestValidatePaths(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalScanReadsBeyondOneKiB(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	source := strings.Repeat("// header\n", 256) + "package main\nfunc main() {}\n"
+	if err := os.WriteFile(filepath.Join(root, "source"), []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := localscan.Run(root, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Files != 1 || stats.Selected != 1 || stats.Bytes != int64(len(source)) {
+		t.Fatalf("files=%d selected=%d bytes=%d", stats.Files, stats.Selected, stats.Bytes)
+	}
+}

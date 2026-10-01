@@ -40,7 +40,7 @@ func measure(n int) measurement {
 	m := measurement{Objects: n, HeapBefore: before.HeapAlloc, MaxSampledHeap: before.HeapAlloc}
 	for i := range n {
 		languages.Analyze(buffers[i%len(buffers)][:], false, &a)
-		if a.Result().Candidates != 0 {
+		if !a.Result().Candidates.Empty() {
 			m.Detected++
 		}
 		if i%10000 == 0 {

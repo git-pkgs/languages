@@ -11,6 +11,7 @@ updates:
     directories:
       - /
       - /tools/enry
+      - /tools/registrygen
     schedule:
       interval: weekly
     cooldown:

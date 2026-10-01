@@ -28,6 +28,7 @@ const (
 	heapInterval   = 1000
 	directoryMode  = 0755
 	sampleMode     = 0600
+	sampleBytes    = 64 * 1024
 )
 
 type Stats struct {
@@ -59,7 +60,7 @@ type candidate struct {
 type scanner struct {
 	stats    Stats
 	samples  [languages.LanguageCount][]candidate
-	buffer   [languages.DefaultBytes]byte
+	buffer   [sampleBytes]byte
 	analysis languages.Analysis
 }
 
@@ -166,7 +167,7 @@ func (s *scanner) file(path, repo string) {
 	switch {
 	case s.analysis.Binary:
 		s.stats.Binary++
-	case r.Candidates == 0:
+	case r.Candidates.Empty():
 		s.stats.Unknown++
 	case r.Language == languages.Unknown:
 		s.stats.Ambiguous++
@@ -298,7 +299,7 @@ func (s *scanner) export(out string) (resultErr error) {
 		}
 	}()
 	encoder := json.NewEncoder(f)
-	var buffer [languages.MaxBytes + 1]byte
+	var buffer [sampleBytes + 1]byte
 	seen := make(map[[sha256.Size]byte]bool)
 	for l := languages.Python; l < languages.LanguageCount; l++ {
 		slices.SortFunc(s.samples[l], func(a, b candidate) int { return bytes.Compare(a.key[:], b.key[:]) })
@@ -307,7 +308,7 @@ func (s *scanner) export(out string) (resultErr error) {
 			if err != nil {
 				return err
 			}
-			if len(data) > languages.MaxBytes {
+			if len(data) > sampleBytes {
 				continue
 			}
 			hash := sha256.Sum256(data)

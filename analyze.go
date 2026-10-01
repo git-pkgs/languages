@@ -1,22 +1,70 @@
 package languages
 
-import "bytes"
+import (
+	"bytes"
+	"math/bits"
 
-const (
-	wordBits       = 64
-	minSignalBytes = 2
-	quoteRemainder = 2
+	"github.com/git-pkgs/languages/internal/classifier"
+	"github.com/git-pkgs/magic"
 )
 
-// Analyze inspects at most MaxBytes. complete must be false for a prefix whose
+const (
+	wordBits           = 64
+	minSignalBytes     = 2
+	sourceTextControls = "\x02\x03\b\v\x0f\x1a\x1f"
+)
+
+// Analyze inspects all supplied bytes. complete must be false for a prefix whose
 // suffix is unavailable. dst must be non-nil and owned by the calling goroutine.
 func Analyze(data []byte, complete bool, dst *Analysis) {
-	*dst = Analysis{Bytes: min(len(data), MaxBytes), Prefix: !complete || len(data) > MaxBytes}
-	data = data[:dst.Bytes]
-	if binary(data) {
+	analyze(data, complete, dst, allHeuristics)
+}
+
+func analyze(data []byte, complete bool, dst *Analysis, heuristic uint16) {
+	if len(data) > textChunkBytes {
+		stream := readerStreams.Get().(*readerStream)
+		defer readerStreams.Put(stream)
+		stream.reset()
+		for offset := 0; offset < len(data); offset += textChunkBytes {
+			stream.write(data[offset:min(offset+textChunkBytes, len(data))])
+		}
+		*dst = stream.finish(complete, heuristic)
+		dst.Bytes = int64(len(data))
+		return
+	}
+	*dst = Analysis{Bytes: int64(len(data)), Prefix: !complete}
+	format := magic.DetectWithOptions(data, magic.Options{Prefix: dst.Prefix, TextControls: sourceTextControls})
+	if format.Kind == magic.KindBinary || format.Kind == magic.KindUnknown && format.Encoding != "" {
 		dst.Binary = true
 		return
 	}
+	switch format.Encoding {
+	case magic.EncodingUTF16LE, magic.EncodingUTF16BE, magic.EncodingUTF32LE, magic.EncodingUTF32BE:
+		analyzeEncoded(data, !dst.Prefix, dst, format.Encoding, heuristic)
+		return
+	}
+	analyzeText(data, !dst.Prefix, dst, heuristic)
+}
+
+func analyzeText(data []byte, complete bool, dst *Analysis, heuristic uint16) {
+	if len(data) <= textChunkBytes {
+		analyzeTextBuffer(data, complete, dst, heuristic)
+		return
+	}
+	stream := textStreams.Get().(*textStream)
+	defer textStreams.Put(stream)
+	stream.reset()
+	for offset := 0; offset < len(data); offset += textChunkBytes {
+		location := sourceMap{base: uint64(offset)}
+		stream.write(data[offset:min(offset+textChunkBytes, len(data))], location.at)
+	}
+	*dst = stream.finish(complete, heuristic)
+	dst.Bytes = int64(len(data))
+}
+
+func analyzeTextBuffer(data []byte, complete bool, dst *Analysis, heuristic uint16) {
+	*dst = Analysis{Bytes: int64(len(data)), Prefix: !complete}
+	detectModeline(data, !dst.Prefix, dst)
 	offset := 0
 	if bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
 		offset = 3
@@ -33,7 +81,7 @@ func Analyze(data []byte, complete bool, dst *Analysis) {
 		line := data[offset:end]
 		if offset == 0 || offset == 3 && bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
 			if bytes.HasPrefix(line, []byte("#!")) {
-				detectShebang(line, end < len(data) || !dst.Prefix, offset, dst, &seen)
+				detectShebang(data, line, end < len(data) || !dst.Prefix, offset, dst, &seen)
 				offset = end + 1
 				continue
 			}
@@ -44,22 +92,41 @@ func Analyze(data []byte, complete bool, dst *Analysis) {
 		}
 		offset = end + 1
 	}
+	if !dst.hasDeclaration() {
+		classifier.Analyze(data, &dst.classification)
+		analyzeHeuristics(data, dst, heuristic)
+	}
 }
 
 func detectLine(code []byte, terminated bool, offset int, dst *Analysis, seen *[2]uint64) {
 	if len(code) < minSignalBytes {
 		return
 	}
-	for i := range rules {
-		first := rules[i].prefix[0]
-		if code[0] < 0x80 && first != '~' && first|0x20 != code[0]|0x20 {
-			continue
+	if len(code) > textChunkBytes {
+		var summary lineSummary
+		for len(code) > 0 {
+			n := min(len(code), textChunkBytes)
+			summary.write(code[:n])
+			code = code[n:]
 		}
-		if seen[i/wordBits]&(1<<uint(i%wordBits)) != 0 {
-			continue
+		for word, candidates := range summary.finish(terminated) {
+			candidates &^= seen[word]
+			for candidates != 0 {
+				i := word*wordBits + bits.TrailingZeros64(candidates)
+				candidates &= candidates - 1
+				record(dst, seen, i, offset)
+			}
 		}
-		if matches(code, &rules[i], terminated) {
-			record(dst, seen, i, offset)
+		return
+	}
+	for word, candidates := range ruleStarts[code[0]] {
+		candidates &^= seen[word]
+		for candidates != 0 {
+			i := word*wordBits + bits.TrailingZeros64(candidates)
+			candidates &= candidates - 1
+			if matches(code, &rules[i], terminated) {
+				record(dst, seen, i, offset)
+			}
 		}
 	}
 }
@@ -69,30 +136,21 @@ func record(dst *Analysis, seen *[2]uint64, index, offset int) {
 		return
 	}
 	seen[index/wordBits] |= 1 << uint(index%wordBits)
-	dst.Signals[dst.Count] = Match{Rule: uint16(index), Offset: uint32(offset)}
+	dst.Signals[dst.Count] = Match{Rule: uint16(index), Offset: uint64(offset)}
 	dst.Count++
-}
-
-func binary(data []byte) bool {
-	for _, b := range data {
-		if b < 0x20 && b != '\n' && b != '\r' && b != '\t' && b != '\f' && b != '\x1b' {
-			return true
-		}
-	}
-	return false
 }
 
 func matches(line []byte, r *rule, terminated bool) bool {
 	if len(line) == 0 || r.weight == declaredWeight {
 		return false
 	}
-	if r.prefix == "~prolog" {
+	if r.prefix == prologPrefix {
 		return prologClause(line)
 	}
-	if r.prefix == "~typed" {
+	if r.prefix == typedPrefix {
 		return typedBinding(line)
 	}
-	fold := r.languages == 1<<HTML || r.languages == 1<<SQL
+	fold := r.languages == NewSet(HTML) || r.languages == NewSet(SQL)
 	if fold {
 		if len(line) < len(r.prefix) || !bytes.EqualFold(line[:len(r.prefix)], []byte(r.prefix)) {
 			return false
@@ -123,7 +181,7 @@ func contains(line []byte, pattern string, fold bool) bool {
 
 func typedBinding(line []byte) bool {
 	var body []byte
-	for _, prefix := range [...]string{"const ", "let ", "var "} {
+	for _, prefix := range [...]string{constPrefix, "let ", "var "} {
 		if bytes.HasPrefix(line, []byte(prefix)) {
 			body = bytes.TrimSpace(line[len(prefix):])
 			break
@@ -154,20 +212,63 @@ func prologClause(line []byte) bool {
 
 func constraints(line []byte, r *rule, terminated bool) bool {
 	switch r.id {
-	case "ruby.def":
+	case rubyRequireID:
+		value := bytes.TrimSpace(line[len(r.prefix):])
+		value = bytes.TrimSpace(bytes.TrimPrefix(value, []byte("(")))
+		return len(value) > 0 && (value[0] == '\'' || value[0] == '"' || value[0] >= 'A' && value[0] <= 'Z')
+	case rubyDefID:
 		return !bytes.ContainsAny(line, ":{")
-	case "ruby.module":
-		return !bytes.ContainsAny(line, ";{=")
-	case "python.import":
-		return !bytes.ContainsAny(line, ";\"'(){}") && !bytes.Contains(line, []byte(" from "))
-	case "go.package":
+	case rubyModuleID:
+		return len(line) > len(r.prefix) && line[len(r.prefix)] >= 'A' && line[len(r.prefix)] <= 'Z' && !bytes.ContainsAny(line, ";{=./")
+	case pythonImportID:
+		return terminated && !bytes.ContainsAny(line, ";\"'(){}") && !bytes.Contains(line, []byte(" from "))
+	case goFuncID, swiftFuncID, goSwiftFuncID:
+		return functionDeclaration(line, terminated) == r.languages
+	case javaPackageID, javaImportID:
+		return !bytes.ContainsAny(line, ":\"'{}()=")
+	case matlabFunctionID:
+		return matlabFunction(line)
+	case racketLangID:
+		word, _ := nextWord(line[len(r.prefix):])
+		return racketLanguage(word)
+	case goPackageID:
 		return !bytes.ContainsAny(line, ";{")
-	case "html.root", "html.doctype", "php.open":
+	case htmlRootID, htmlDoctypeID, phpOpenID, hackOpenID:
 		return len(line) == len(r.prefix) && terminated || len(line) > len(r.prefix) && (space(line[len(r.prefix)]) || line[len(r.prefix)] == '>')
-	case "c.include":
+	case cIncludeID:
 		return len(line) > len(r.prefix) && (space(line[len(r.prefix)]) || line[len(r.prefix)] == '<' || line[len(r.prefix)] == '"')
 	}
 	return true
+}
+
+func functionDeclaration(line []byte, terminated bool) Set {
+	header, _, body := bytes.Cut(line, []byte("{"))
+	if !terminated && !body || !bytes.ContainsRune(header, ')') {
+		return Set{}
+	}
+	if bytes.ContainsRune(header, ':') || bytes.Contains(header, []byte("->")) {
+		return NewSet(Swift)
+	}
+	_, parameters, _ := bytes.Cut(header, []byte("("))
+	if bytes.Equal(bytes.TrimSpace(parameters), []byte(")")) {
+		return NewSet(Go, Swift)
+	}
+	return NewSet(Go)
+}
+
+func matlabFunction(line []byte) bool {
+	_, value, _ := bytes.Cut(line, []byte("="))
+	value = bytes.TrimSpace(value)
+	return len(value) > 0 && (value[0] >= 'a' && value[0] <= 'z' || value[0] >= 'A' && value[0] <= 'Z') && !bytes.ContainsAny(value, "|{")
+}
+
+func racketLanguage(word []byte) bool {
+	for _, name := range [...]string{"racket", "typed/racket", "scheme"} {
+		if bytes.Equal(word, []byte(name)) || bytes.HasPrefix(word, []byte(name+"/")) {
+			return true
+		}
+	}
+	return bytes.HasPrefix(word, []byte("scribble/"))
 }
 
 func space(b byte) bool { return b == ' ' || b == '\t' || b == '\r' || b == '\n' }
@@ -181,7 +282,31 @@ func nextWord(line []byte) (word, rest []byte) {
 	return line[:i], line[i:]
 }
 
-func detectShebang(line []byte, terminated bool, offset int, dst *Analysis, seen *[2]uint64) {
+func detectShebang(data, line []byte, terminated bool, offset int, dst *Analysis, seen *[2]uint64) {
+	if len(data) <= textChunkBytes {
+		detectShebangLine(data, line, terminated, offset, dst, seen)
+		return
+	}
+	var stream headerStream
+	data = data[offset:]
+	for len(data) > 0 && stream.lines < modelineLines {
+		n := min(len(data), textChunkBytes)
+		stream.write(data[:n])
+		data = data[n:]
+	}
+	index := stream.finish(!dst.Prefix)
+	if index < 0 {
+		return
+	}
+	if index < len(rules) {
+		record(dst, seen, index, offset)
+	} else {
+		dst.Signals[dst.Count] = Match{Rule: uint16(index), Offset: uint64(offset)}
+		dst.Count++
+	}
+}
+
+func detectShebangLine(data, line []byte, terminated bool, offset int, dst *Analysis, seen *[2]uint64) {
 	word, rest := nextWord(line[2:])
 	if i := bytes.LastIndexByte(word, '/'); i >= 0 {
 		word = word[i+1:]
@@ -195,6 +320,17 @@ func detectShebang(line []byte, terminated bool, offset int, dst *Analysis, seen
 	if i := bytes.LastIndexByte(word, '/'); i >= 0 {
 		word = word[i+1:]
 	}
+	if shellExecutable(word) {
+		if command := wrapperCommand(data, !dst.Prefix); len(command) > 0 {
+			word = command
+		}
+	}
+	if bytes.Equal(word, []byte("perl6")) {
+		word = []byte("raku")
+	}
+	if osaLanguageOverride(word, rest) {
+		return
+	}
 	for i := range rules {
 		r := &rules[i]
 		if r.weight != declaredWeight {
@@ -205,7 +341,7 @@ func detectShebang(line []byte, terminated bool, offset int, dst *Analysis, seen
 			continue
 		}
 		tail := word[len(name):]
-		if len(tail) > 0 && name != "python" && name != "ruby" && name != "perl" && name != "lua" {
+		if len(tail) > 0 && !versionedInterpreter(name) {
 			continue
 		}
 		valid := true
@@ -220,6 +356,31 @@ func detectShebang(line []byte, terminated bool, offset int, dst *Analysis, seen
 			return
 		}
 	}
+	for i := range interpreterRules {
+		if bytes.Equal(word, []byte(interpreterRules[i].prefix[1:])) {
+			dst.Signals[dst.Count] = Match{Rule: uint16(len(rules) + i), Offset: uint64(offset)}
+			dst.Count++
+			return
+		}
+	}
+}
+
+func versionedInterpreter(name string) bool {
+	return name == "python" || name == "ruby" || name == "perl" || name == "lua"
+}
+
+func osaLanguageOverride(command, options []byte) bool {
+	if !bytes.Equal(command, []byte("osascript")) {
+		return false
+	}
+	for len(options) > 0 {
+		var option []byte
+		option, options = nextWord(options)
+		if bytes.HasPrefix(option, []byte("-l")) {
+			return true
+		}
+	}
+	return false
 }
 
 func envCommand(rest []byte) (word, tail []byte) {
@@ -228,7 +389,17 @@ func envCommand(rest []byte) (word, tail []byte) {
 		if len(word) == 0 {
 			return nil, nil
 		}
-		if bytes.Equal(word, []byte("-S")) || bytes.Equal(word, []byte("-i")) || bytes.Equal(word, []byte("--")) || bytes.ContainsRune(word, '=') {
+		if bytes.Equal(word, []byte("--")) {
+			return nextWord(rest)
+		}
+		if bytes.Equal(word, []byte("-u")) || bytes.Equal(word, []byte("--unset")) {
+			_, rest = nextWord(rest)
+			continue
+		}
+		if envFlags(word) || bytes.Equal(word, []byte("--ignore-environment")) || bytes.Equal(word, []byte("--split-string")) || bytes.HasPrefix(word, []byte("--unset=")) {
+			continue
+		}
+		if word[0] != '-' && bytes.ContainsRune(word, '=') {
 			continue
 		}
 		// Unknown options may take arguments.
@@ -239,83 +410,49 @@ func envCommand(rest []byte) (word, tail []byte) {
 	}
 }
 
-// This shield handles common multiline comments and strings, without parsing.
-type lexicalState struct {
-	block  bool
-	quote  byte
-	triple bool
+func envFlags(word []byte) bool {
+	if len(word) < 2 || word[0] != '-' {
+		return false
+	}
+	for i, b := range word[1:] {
+		if b != 'i' && b != 'v' && (b != 'S' || i != len(word)-2) {
+			return false
+		}
+	}
+	return true
 }
 
-func (s *lexicalState) codeStart(line []byte) int {
-	start := -1
-	for i := 0; i < len(line); i++ {
-		b := line[i]
-		if s.block {
-			if b == '*' && i+1 < len(line) && line[i+1] == '/' {
-				s.block = false
-				i++
-			}
-			continue
-		}
-		if s.quote != 0 {
-			i = s.skipQuote(line, i)
-			continue
-		}
-		if space(b) {
-			continue
-		}
-		if bytes.HasPrefix(line[i:], []byte("//")) {
-			break
-		}
-		if bytes.HasPrefix(line[i:], []byte("/*")) {
-			s.block = true
-			i++
-			continue
-		}
-		if start < 0 {
-			if b == ';' || b == '%' || b == '-' && i+1 < len(line) && line[i+1] == '-' {
-				break
-			}
-			start = i
-			if b == '#' {
-				return start
-			}
-		}
-		if b == '\'' || b == '"' || b == '`' {
-			i = s.openQuote(line, i)
-		}
+func shellExecutable(word []byte) bool {
+	switch string(word) {
+	case "sh", "bash", "dash", "ksh", "zsh":
+		return true
 	}
-	if s.quote != '`' && !s.triple {
-		s.quote = 0
-	}
-	return start
+	return false
 }
 
-func (s *lexicalState) skipQuote(line []byte, i int) int {
-	b := line[i]
-	if b == '\\' {
-		return i + 1
+func wrapperCommand(data []byte, complete bool) []byte {
+	for range 5 {
+		line, rest, terminated := bytes.Cut(data, []byte("\n"))
+		if !terminated && !complete {
+			return nil
+		}
+		data = rest
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("exec ")) || !bytes.Contains(line, []byte("\"$0\"")) {
+			continue
+		}
+		word, tail := nextWord(line[len("exec "):])
+		if bytes.Equal(word, []byte("env")) {
+			word, _ = envCommand(tail)
+		}
+		if i := bytes.LastIndexByte(word, '/'); i >= 0 {
+			word = word[i+1:]
+		}
+		return word
 	}
-	if b != s.quote {
-		return i
-	}
-	if !s.triple {
-		s.quote = 0
-		return i
-	}
-	if i+2 < len(line) && line[i+1] == b && line[i+2] == b {
-		s.quote = 0
-		s.triple = false
-		return i + quoteRemainder
-	}
-	return i
+	return nil
 }
 
-func (s *lexicalState) openQuote(line []byte, i int) int {
-	s.quote = line[i]
-	if i+2 < len(line) && line[i+1] == s.quote && line[i+2] == s.quote {
-		s.triple = true
-		return i + quoteRemainder
-	}
-	return i
+func commentLine(line []byte) bool {
+	return line[0] == ';' || bytes.HasPrefix(line, []byte("--"))
 }

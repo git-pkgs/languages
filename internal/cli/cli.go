@@ -1,35 +1,46 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"os"
 
 	"github.com/git-pkgs/languages"
 )
 
-const pathMode = "path"
+const (
+	pathMode     = "path"
+	combinedMode = "combined"
+)
+
+type options struct {
+	mode, name, source string
+	limit              int64
+	depth              int
+	prefix, json       bool
+}
 
 type Output struct {
-	Language   string               `json:"language,omitempty"`
-	Confidence languages.Confidence `json:"confidence"`
-	Candidates []string             `json:"candidates,omitempty"`
-	Conflict   bool                 `json:"conflict,omitempty"`
-	Bytes      int                  `json:"bytes_examined"`
-	Prefix     bool                 `json:"prefix"`
-	Binary     bool                 `json:"binary,omitempty"`
-	Content    []Evidence           `json:"content_evidence,omitempty"`
-	Path       *PathEvidence        `json:"path_evidence,omitempty"`
+	Language    string               `json:"language,omitempty"`
+	Confidence  languages.Confidence `json:"confidence"`
+	Candidates  []string             `json:"candidates,omitempty"`
+	Conflict    bool                 `json:"conflict,omitempty"`
+	Statistical bool                 `json:"statistical,omitempty"`
+	Bytes       int64                `json:"bytes_examined"`
+	Prefix      bool                 `json:"prefix"`
+	Binary      bool                 `json:"binary,omitempty"`
+	Content     []Evidence           `json:"content_evidence,omitempty"`
+	Path        *PathEvidence        `json:"path_evidence,omitempty"`
 }
 
 type Evidence struct {
 	ID          string   `json:"id"`
 	Description string   `json:"description"`
 	Languages   []string `json:"languages"`
-	Offset      uint32   `json:"offset"`
+	Offset      uint64   `json:"offset"`
 }
 
 type PathEvidence struct {
@@ -48,12 +59,12 @@ func Names(s languages.Set) []string {
 }
 
 func Format(a *languages.Analysis, c languages.Context, result languages.Result) Output {
-	o := Output{Language: result.Language.String(), Confidence: result.Confidence, Candidates: Names(result.Candidates), Conflict: result.Conflict, Bytes: a.Bytes, Prefix: a.Prefix, Binary: a.Binary}
+	o := Output{Language: result.Language.String(), Confidence: result.Confidence, Candidates: Names(result.Candidates), Conflict: result.Conflict, Statistical: result.Statistical, Bytes: a.Bytes, Prefix: a.Prefix, Binary: a.Binary}
 	for _, m := range a.Signals[:a.Count] {
 		e := m.Evidence()
 		o.Content = append(o.Content, Evidence{e.ID, e.Description, Names(e.Languages), e.Offset})
 	}
-	if c.Candidates != 0 {
+	if !c.Candidates.Empty() {
 		o.Path = &PathEvidence{c.Reason, Names(c.Candidates)}
 	}
 	return o
@@ -61,60 +72,82 @@ func Format(a *languages.Analysis, c languages.Context, result languages.Result)
 
 // Run combines content with the source path or contextual filename by default.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("languages", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	mode := flags.String("mode", "combined", "content, path, or combined")
-	name := flags.String("name", "", "optional contextual filename")
-	limit := flags.Int("bytes", languages.DefaultBytes, "maximum bytes to read (1..65536)")
-	prefix := flags.Bool("prefix", false, "input is already truncated; EOF does not establish object completeness")
-	if err := flags.Parse(args); err != nil {
+	opts, err := parseOptions(args, stderr)
+	if err != nil {
 		return err
 	}
-	if *mode != "content" && *mode != pathMode && *mode != "combined" {
-		return errors.New("mode must be content, path, or combined")
+	if info, err := os.Stat(opts.source); err == nil && info.IsDir() {
+		if opts.name != "" || opts.prefix || opts.mode != combinedMode {
+			return errors.New("directory scans require combined mode without -name or -prefix")
+		}
+		return runDirectory(opts, stdout)
 	}
-	if *limit < 1 || *limit > languages.MaxBytes {
-		return fmt.Errorf("bytes must be between 1 and %d", languages.MaxBytes)
+	return runFile(opts, stdin, stdout)
+}
+
+func parseOptions(args []string, stderr io.Writer) (options, error) {
+	var opts options
+	flags := flag.NewFlagSet("languages", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.StringVar(&opts.mode, "mode", combinedMode, "content, path, or combined")
+	flags.StringVar(&opts.name, "name", "", "optional contextual filename")
+	flags.Int64Var(&opts.limit, "bytes", languages.DefaultBytes, "maximum bytes to read per file; 0 reads the full file")
+	flags.BoolVar(&opts.prefix, "prefix", false, "input is already truncated; EOF does not establish object completeness")
+	flags.BoolVar(&opts.json, "json", false, "write a directory tree as JSON")
+	flags.IntVar(&opts.depth, "depth", -1, "directory display depth; 0 shows the root, -1 shows all")
+	if err := flags.Parse(args); err != nil {
+		return opts, err
+	}
+	if opts.mode != "content" && opts.mode != pathMode && opts.mode != combinedMode {
+		return opts, errors.New("mode must be content, path, or combined")
+	}
+	if opts.limit < 0 {
+		return opts, errors.New("bytes must be zero or greater")
+	}
+	if opts.depth < -1 {
+		return opts, errors.New("depth must be -1 or greater")
 	}
 	if flags.NArg() > 1 {
-		return errors.New("expected at most one input file, or - for stdin")
+		return opts, errors.New("expected at most one file or directory, or - for stdin")
 	}
-	source := flags.Arg(0)
-	if *name == "" && source != "-" {
-		*name = source
+	opts.source = flags.Arg(0)
+	return opts, nil
+}
+
+func runFile(opts options, stdin io.Reader, stdout io.Writer) error {
+	if opts.name == "" && opts.source != "-" {
+		opts.name = opts.source
 	}
 	var a languages.Analysis
 	var c languages.Context
-	if *mode != "content" {
-		c = languages.AnalyzePath(*name)
+	if opts.mode != "content" {
+		c = languages.AnalyzePath(opts.name)
 	}
-	if *mode == pathMode {
-		if *name == "" {
+	if opts.mode == pathMode {
+		if opts.name == "" {
 			return errors.New("path mode requires -name or a path argument")
 		}
 	} else {
 		reader := stdin
-		if source != "" && source != "-" {
-			f, err := os.Open(source)
+		if opts.source != "" && opts.source != "-" {
+			f, err := os.Open(opts.source)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = f.Close() }()
 			reader = f
 		}
-		buf := make([]byte, *limit)
-		n, err := io.ReadFull(reader, buf)
-		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		err := languages.AnalyzeReader(context.Background(), reader, languages.ReadOptions{Bytes: opts.limit, Prefix: opts.prefix}, &a)
+		if err != nil {
 			return err
 		}
-		languages.Analyze(buf[:n], n < *limit && !*prefix, &a)
 	}
 	var r languages.Result
-	switch *mode {
+	switch opts.mode {
 	case pathMode:
 		r = c.Result()
-	case "combined":
-		r = a.Detect(*name)
+	case combinedMode:
+		r = a.Detect(opts.name)
 	default:
 		r = a.Result()
 	}

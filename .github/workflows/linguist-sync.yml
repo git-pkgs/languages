@@ -1,0 +1,144 @@
+name: Sync Linguist
+
+on:
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: linguist-sync
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Check for an outstanding update
+        id: pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          pending=$(gh api --paginate "repos/$GH_REPO/pulls?state=open&per_page=100" \
+            --jq '.[] | select(.head.ref | startswith("sync/linguist-")) | .html_url')
+          if [ -n "$pending" ]; then
+            echo 'exists=true' >> "$GITHUB_OUTPUT"
+            printf 'Pending update: %s\n' "$pending" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'exists=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.pending.outputs.exists == 'false'
+        with:
+          repository: github-linguist/linguist
+          path: .linguist
+          persist-credentials: false
+          sparse-checkout: |
+            lib/linguist/languages.yml
+            lib/linguist/heuristics.yml
+            samples
+            LICENSE
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.pending.outputs.exists == 'false'
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Regenerate metadata
+        if: steps.pending.outputs.exists == 'false'
+        id: generate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          revision=$(git -C .linguist rev-parse HEAD)
+          branch="sync/linguist-$revision"
+          existing=$(gh pr list --state all --head "$branch" --json url --jq '.[0].url // empty')
+          if [ -n "$existing" ]; then
+            echo "Update already reviewed: $existing" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          cp .linguist/lib/linguist/languages.yml tools/registrygen/languages.yml
+          cp .linguist/lib/linguist/heuristics.yml tools/registrygen/heuristics.yml
+          cp .linguist/LICENSE LICENSE.linguist
+          git -C .linguist rev-parse HEAD:samples > tools/registrygen/samples-tree
+          if git diff --quiet -- tools/registrygen/languages.yml tools/registrygen/heuristics.yml LICENSE.linguist tools/registrygen/samples-tree; then
+            exit 0
+          fi
+          printf '%s\n' "$revision" > tools/registrygen/revision
+          go generate ./...
+          go run ./internal/modelgen -corpus .linguist/samples
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+      - name: Build and test
+        if: steps.generate.outputs.changed == 'true'
+        run: |
+          CGO_ENABLED=0 go build ./...
+          make test
+          go vet ./...
+          go -C tools/registrygen test ./...
+          go -C tools/enry test ./...
+          GOOS=js GOARCH=wasm go build -o "$RUNNER_TEMP/languages.wasm" ./internal/wasmcheck
+          "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" "$RUNNER_TEMP/languages.wasm"
+      - name: Quality checks
+        if: steps.generate.outputs.changed == 'true'
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          go install golang.org/x/tools/cmd/deadcode@v0.49.0
+          make quality
+      - name: Evaluate upstream samples
+        if: steps.generate.outputs.changed == 'true'
+        env:
+          REVISION: ${{ steps.generate.outputs.revision }}
+        run: |
+          go -C tools/enry build -o "$RUNNER_TEMP/enry" .
+          go run ./cmd/evaluate -corpus .linguist/samples -revision "$REVISION" \
+            -baseline "$RUNNER_TEMP/enry" > "$RUNNER_TEMP/evaluation.json"
+          {
+            printf 'Linguist commit: `%s`\n\n' "$REVISION"
+            printf 'Regenerate language metadata and the bounded content classifier from the pinned upstream sources.\n\n'
+            printf 'Corpus results measure the training samples, not independent accuracy.\n\n'
+            printf '```json\n'
+            jq '{revision, files, unsupported_files, rows: [.rows[] | select(.bytes == 1024 or .bytes == 65536) | select(.mode == "combined") | {mode, bytes, languages, baseline, unsupported}]}' "$RUNNER_TEMP/evaluation.json"
+            printf '```\n'
+          } > "$RUNNER_TEMP/linguist-pr.md"
+          cat "$RUNNER_TEMP/linguist-pr.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Propose update
+        if: steps.generate.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REVISION: ${{ steps.generate.outputs.revision }}
+          UPDATE_BRANCH: ${{ steps.generate.outputs.branch }}
+        run: |
+          git switch -c "$UPDATE_BRANCH"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add registry_generated.go tools/registrygen/languages.yml tools/registrygen/revision tools/registrygen/samples-tree LICENSE.linguist
+          git add heuristics_generated.go tools/registrygen/heuristics.yml
+          git add internal/classifier/model_generated.go internal/classifier/index.bin internal/classifier/tokens.bin internal/classifier/weights.bin internal/classifier/training.json
+          remote=$(git ls-remote --heads origin "$UPDATE_BRANCH")
+          if [ -n "$remote" ]; then
+            git fetch origin "$UPDATE_BRANCH"
+            if [ "$(git write-tree)" != "$(git rev-parse 'FETCH_HEAD^{tree}')" ]; then
+              echo 'Existing update branch differs from regenerated files; review it before retrying.' >&2
+              exit 1
+            fi
+            git reset --soft FETCH_HEAD
+          else
+            git commit -m "Sync Linguist metadata at $REVISION"
+          fi
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin "HEAD:$UPDATE_BRANCH"
+          gh pr create --repo "$GH_REPO" --base main --head "$UPDATE_BRANCH" \
+            --title "Sync Linguist metadata at $REVISION" --body-file "$RUNNER_TEMP/linguist-pr.md"

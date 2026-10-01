@@ -14,8 +14,13 @@ import (
 	"github.com/git-pkgs/languages"
 )
 
-var Sizes = [...]int{128, 256, 512, 1024, 4096, 0}
-var Modes = [...]string{"content", "path", "combined"}
+const maxPrefixBytes = 64 * 1024
+
+var Sizes = [...]int{128, 256, 512, 1024, 4096, 16384, maxPrefixBytes, 0}
+
+const pathMode = "path"
+
+var Modes = [...]string{"content", pathMode, "combined"}
 
 type Request struct {
 	Mode    string `json:"mode"`
@@ -39,10 +44,14 @@ type Counts struct {
 	High           int `json:"high"`
 	HighCorrect    int `json:"high_correct"`
 	CandidateTotal int `json:"candidate_total"`
+	Conflicts      int `json:"conflicts"`
 }
 
 func (c *Counts) Add(expected languages.Language, result languages.Result) {
 	c.Total++
+	if result.Conflict {
+		c.Conflicts++
+	}
 	c.CandidateTotal += result.Candidates.Len()
 	if result.Candidates.Has(expected) {
 		c.CandidateHits++
@@ -51,7 +60,7 @@ func (c *Counts) Add(expected languages.Language, result languages.Result) {
 		c.FamilyCorrect++
 	}
 	switch {
-	case result.Candidates == 0:
+	case result.Candidates.Empty():
 		c.Unknown++
 	case result.Language == languages.Unknown:
 		c.Ambiguous++
@@ -83,31 +92,64 @@ type Row struct {
 	ByLanguage            [languages.LanguageCount]Counts `json:"by_language"`
 	Extensionless         Counts                          `json:"extensionless"`
 	ExtensionlessBaseline Counts                          `json:"extensionless_baseline"`
+	Unsupported           UnsupportedCounts               `json:"unsupported"`
+}
+
+// UnsupportedCounts measures selections outside the supported label set.
+// A selection can be a related language or embedded source, so it needs review.
+type UnsupportedCounts struct {
+	Total        int `json:"total"`
+	Selected     int `json:"selected"`
+	Ambiguous    int `json:"ambiguous"`
+	Unknown      int `json:"unknown"`
+	Conflicts    int `json:"conflicts"`
+	HighSelected int `json:"high_selected"`
+}
+
+func (c *UnsupportedCounts) Add(result languages.Result) {
+	c.Total++
+	switch {
+	case result.Language != languages.Unknown:
+		c.Selected++
+		if result.Confidence == languages.High {
+			c.HighSelected++
+		}
+	case !result.Candidates.Empty():
+		c.Ambiguous++
+	default:
+		c.Unknown++
+	}
+	if result.Conflict {
+		c.Conflicts++
+	}
 }
 
 type Report struct {
-	Source      string  `json:"source"`
-	Revision    string  `json:"revision,omitempty"`
-	Files       int     `json:"files"`
-	Unsupported int     `json:"unsupported_files"`
-	Oversized   int     `json:"oversized_complete_skipped"`
-	Rows        [18]Row `json:"rows"`
+	Source      string                       `json:"source"`
+	Revision    string                       `json:"revision,omitempty"`
+	Files       int                          `json:"files"`
+	Unsupported int                          `json:"unsupported_files"`
+	Rows        [len(Modes) * len(Sizes)]Row `json:"rows"`
 }
 
 type Prediction struct {
 	Path         string               `json:"path"`
 	PrefixSHA256 string               `json:"prefix_sha256"`
 	Expected     string               `json:"expected"`
+	Supported    bool                 `json:"supported"`
 	Mode         string               `json:"mode"`
 	Bytes        int                  `json:"bytes"`
 	Language     string               `json:"language"`
 	Candidates   languages.Set        `json:"candidates"`
 	Confidence   languages.Confidence `json:"confidence"`
+	Conflict     bool                 `json:"conflict"`
+	Binary       bool                 `json:"binary"`
+	Statistical  bool                 `json:"statistical"`
+	Evidence     []languages.Evidence `json:"evidence,omitempty"`
 	Baseline     string               `json:"baseline,omitempty"`
 }
 
 // Run reads a Linguist samples directory without copying its files into the repo.
-// Complete-file rows omit files larger than MaxBytes; prefix rows include them.
 func Run(root string, baseline Baseline, predictions io.Writer) (Report, error) {
 	e := evaluator{report: Report{Source: root}, baseline: baseline}
 	for m, mode := range Modes {
@@ -119,8 +161,8 @@ func Run(root string, baseline Baseline, predictions io.Writer) (Report, error) 
 		e.encoder = json.NewEncoder(predictions)
 	}
 	err := walk(root, 0, e.file)
-	if err == nil && e.report.Files == 0 {
-		err = errors.New("no supported language samples found")
+	if err == nil && e.report.Files+e.report.Unsupported == 0 {
+		err = errors.New("no language samples found")
 	}
 	return e.report, err
 }
@@ -129,7 +171,6 @@ type evaluator struct {
 	report   Report
 	baseline Baseline
 	encoder  *json.Encoder
-	buf      [languages.MaxBytes + 1]byte
 }
 
 func (e *evaluator) file(path string) error {
@@ -142,47 +183,29 @@ func (e *evaluator) file(path string) error {
 		return nil
 	}
 	expected := languages.Parse(label)
-	if expected == languages.Unknown {
-		e.report.Unsupported++
-		return nil
-	}
-	n, err := read(path, e.buf[:])
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	e.report.Files++
-	if n > languages.MaxBytes {
-		e.report.Oversized++
+	if expected == languages.Unknown {
+		e.report.Unsupported++
+	} else {
+		e.report.Files++
 	}
 	for s, size := range Sizes {
-		if size == 0 && n > languages.MaxBytes {
-			continue
-		}
-		length := n
+		length := len(content)
 		if size > 0 {
-			length = min(n, size)
+			length = min(length, size)
 		}
-		if err := e.sample(rel, expected, s, e.buf[:length], length == n); err != nil {
+		if err := e.sample(rel, label, s, content[:length], length == len(content)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func read(path string, buf []byte) (int, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, err
-	}
-	n, readErr := io.ReadFull(f, buf)
-	closeErr := f.Close()
-	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
-		return n, readErr
-	}
-	return n, closeErr
-}
-
-func (e *evaluator) sample(path string, expected languages.Language, sizeIndex int, content []byte, complete bool) error {
+func (e *evaluator) sample(path, label string, sizeIndex int, content []byte, complete bool) error {
+	expected := languages.Parse(label)
 	var a languages.Analysis
 	languages.Analyze(content, complete, &a)
 	c := languages.AnalyzePath(filepath.Base(path))
@@ -190,24 +213,29 @@ func (e *evaluator) sample(path string, expected languages.Language, sizeIndex i
 	for m, mode := range Modes {
 		row := &e.report.Rows[m*len(Sizes)+sizeIndex]
 		r := results[m]
-		row.Ours.Add(expected, r)
-		row.ByLanguage[expected].Add(expected, r)
-		if filepath.Ext(path) == "" {
-			row.Extensionless.Add(expected, r)
+		if expected != languages.Unknown {
+			row.Ours.Add(expected, r)
+			row.ByLanguage[expected].Add(expected, r)
+			if filepath.Ext(path) == "" {
+				row.Extensionless.Add(expected, r)
+			}
+		} else {
+			row.Unsupported.Add(r)
 		}
-		response, err := e.compare(mode, path, content)
+		response, err := e.compare(expected, mode, path, content)
 		if err != nil {
 			return err
 		}
-		if e.baseline != nil {
+		if e.baseline != nil && expected != languages.Unknown {
 			row.Baseline.AddBaseline(expected, response.Language)
 			if filepath.Ext(path) == "" {
 				row.ExtensionlessBaseline.AddBaseline(expected, response.Language)
 			}
 		}
 		if e.encoder != nil {
-			hash := sha256.Sum256(content)
-			if err := e.encoder.Encode(Prediction{path, hex.EncodeToString(hash[:]), expected.String(), mode, Sizes[sizeIndex], r.Language.String(), r.Candidates, r.Confidence, response.Language}); err != nil {
+			prediction := predictionFor(path, label, mode, Sizes[sizeIndex], content, &a, r)
+			prediction.Baseline = response.Language
+			if err := e.encoder.Encode(prediction); err != nil {
 				return err
 			}
 		}
@@ -215,12 +243,32 @@ func (e *evaluator) sample(path string, expected languages.Language, sizeIndex i
 	return nil
 }
 
-func (e *evaluator) compare(mode, path string, content []byte) (Response, error) {
-	if e.baseline == nil {
+func predictionFor(path, label, mode string, size int, content []byte, a *languages.Analysis, r languages.Result) Prediction {
+	hash := sha256.Sum256(content)
+	expected := languages.Parse(label)
+	if expected != languages.Unknown {
+		label = expected.String()
+	}
+	p := Prediction{
+		Path: path, PrefixSHA256: hex.EncodeToString(hash[:]), Expected: label,
+		Supported: expected != languages.Unknown, Mode: mode, Bytes: size,
+		Language: r.Language.String(), Candidates: r.Candidates, Confidence: r.Confidence,
+		Conflict: r.Conflict, Binary: a.Binary, Statistical: r.Statistical,
+	}
+	if mode != pathMode {
+		for _, match := range a.Signals[:a.Count] {
+			p.Evidence = append(p.Evidence, match.Evidence())
+		}
+	}
+	return p
+}
+
+func (e *evaluator) compare(expected languages.Language, mode, path string, content []byte) (Response, error) {
+	if e.baseline == nil || expected == languages.Unknown {
 		return Response{}, nil
 	}
 	req := Request{Mode: mode}
-	if mode != "path" {
+	if mode != pathMode {
 		req.Content = content
 	}
 	if mode != "content" {
@@ -233,7 +281,7 @@ func (c *Counts) AddBaseline(expected languages.Language, name string) {
 	l := languages.Parse(name)
 	r := languages.Result{Language: l}
 	if l != languages.Unknown {
-		r.Candidates = 1 << l
+		r.Candidates = languages.NewSet(l)
 	}
 	c.Add(expected, r)
 	if l == languages.Unknown && name != "" {

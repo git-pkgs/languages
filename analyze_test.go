@@ -3,6 +3,7 @@ package languages_test
 import (
 	"bytes"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -46,9 +47,14 @@ func TestConfidenceRank(t *testing.T) {
 func TestControlBytes(t *testing.T) {
 	for b := byte(0); b < 0x20; b++ {
 		a := analyze("#!/bin/bash\nprintf '" + string([]byte{b}) + "[31mred'\n")
-		allowed := b == '\t' || b == '\n' || b == '\r' || b == '\f' || b == '\x1b'
+		allowed := strings.IndexByte("\t\n\f\r\x1b\x02\x03\b\v\x0f\x1a\x1f", b) >= 0
 		if a.Binary == allowed || allowed && a.Result().Language != languages.Bash || !allowed && a.Count != 0 {
 			t.Errorf("control byte %#x: binary %t, result %+v", b, a.Binary, a.Result())
+		}
+	}
+	for _, data := range []string{"\x00", "\x01\x02\x03", "abc\x00def"} {
+		if a := analyze(data); !a.Binary || a.Count != 0 {
+			t.Errorf("binary control sequence accepted: %q", data)
 		}
 	}
 }
@@ -62,7 +68,7 @@ func TestContent(t *testing.T) {
 		{"python", "from pathlib import Path\ndef read(path):\n    return Path(path).read_text()\n", languages.Python},
 		{"go", "package main\nimport (\"fmt\")\nfunc main() { fmt.Println(1) }", languages.Go},
 		{"rust", "use std::io;\nfn main() {}", languages.Rust},
-		{"java", "package demo;\nimport java.util.List;", languages.Java},
+		{"java", "package demo;\nimport java.util.List;\npublic class Demo {\npublic static void main(String[] args) {}\n}\n", languages.Java},
 		{"cpp", "#include <vector>\nusing namespace std;", languages.CPP},
 		{"objc", "#import <Foundation/Foundation.h>\n@interface Thing : NSObject", languages.ObjectiveC},
 		{"objc-interface", "@interface Thing : NSObject", languages.ObjectiveC},
@@ -149,16 +155,16 @@ func TestPathAndCombination(t *testing.T) {
 	if got := languages.AnalyzePath(`C:\src\Gemfile`).Result().Language; got != languages.Ruby {
 		t.Fatal(got)
 	}
-	if c := languages.AnalyzePath("src/python/README"); c.Candidates != 0 {
+	if c := languages.AnalyzePath("src/python/README"); !c.Candidates.Empty() {
 		t.Fatal(c)
 	}
 }
 
-func TestBoundsReuseAndBytes(t *testing.T) {
+func TestReuseAndBytes(t *testing.T) {
 	data := bytes.Repeat([]byte("# frozen_string_literal: true\n"), 10000)
 	var a languages.Analysis
 	languages.Analyze(data, true, &a)
-	if a.Bytes != languages.MaxBytes || !a.Prefix || a.Count != 1 {
+	if a.Bytes != int64(len(data)) || a.Prefix || a.Count != 1 {
 		t.Fatal(a.Bytes, a.Prefix, a.Count)
 	}
 	before := a
@@ -171,7 +177,7 @@ func TestBoundsReuseAndBytes(t *testing.T) {
 		t.Fatal(a)
 	}
 	languages.Analyze([]byte("\x00package main\nfunc main(){}"), true, &a)
-	if !a.Binary || a.Result().Candidates != 0 {
+	if !a.Binary || !a.Result().Candidates.Empty() {
 		t.Fatal(a)
 	}
 	languages.Analyze([]byte("#!/usr/bin/python"), false, &a)
@@ -268,7 +274,7 @@ func TestExtensionlessAndMisleadingNames(t *testing.T) {
 func TestParallelAndAllocations(t *testing.T) {
 	data := []byte("package main\nimport (\"fmt\")\nfunc main() {}")
 	var a languages.Analysis
-	if n := testing.AllocsPerRun(100, func() { languages.Analyze(data, false, &a); _ = a.Result() }); n != 0 {
+	if n := testing.AllocsPerRun(100, func() { languages.Analyze(data, false, &a); _ = a.Result() }); n != 0 && !raceEnabled {
 		t.Fatal(n)
 	}
 	want := a
@@ -295,12 +301,12 @@ func FuzzAnalyze(f *testing.F) {
 		var a, b languages.Analysis
 		languages.Analyze(data, complete, &a)
 		languages.Analyze(data, complete, &b)
-		if a != b || a.Count > languages.MaxSignals || a.Bytes > languages.MaxBytes {
+		if a != b || a.Count > languages.MaxSignals || a.Bytes != int64(len(data)) {
 			t.Fatal("invariant")
 		}
 		_ = a.Result()
 		for _, m := range a.Signals[:a.Count] {
-			if int(m.Offset) >= a.Bytes {
+			if m.Offset >= uint64(a.Bytes) {
 				t.Fatal("offset")
 			}
 		}

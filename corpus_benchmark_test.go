@@ -17,6 +17,7 @@ func BenchmarkCorpusPrefixes(b *testing.B) {
 		b.Skip("set LANGUAGES_BENCH_CORPUS to a sampled corpus directory")
 	}
 	const maxSamples = 1024
+	const prefixBytes = 1024
 	var inputs [][]byte
 	var names []string
 	var total int64
@@ -42,7 +43,7 @@ func BenchmarkCorpusPrefixes(b *testing.B) {
 		if err != nil {
 			return err
 		}
-		buf := make([]byte, languages.DefaultBytes)
+		buf := make([]byte, prefixBytes)
 		n, readErr := io.ReadFull(f, buf)
 		closeErr := f.Close()
 		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {

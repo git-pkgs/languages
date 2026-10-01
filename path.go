@@ -3,21 +3,26 @@ package languages
 import "strings"
 
 const (
-	filenameReason      = "conventional filename"
-	extensionReason     = "extension"
-	cFamily         Set = 1<<C | 1<<CPP | 1<<ObjectiveC
-	jsFamily        Set = 1<<JavaScript | 1<<TypeScript | 1<<JSX | 1<<TSX
-	tsFamily        Set = 1<<TypeScript | 1<<TSX
-	jsxFamily       Set = 1<<JSX | 1<<TSX
-	shellFamily     Set = 1<<Shell | 1<<Bash | 1<<Zsh
-	schemeFamily    Set = 1<<Scheme | 1<<Racket
-	templateFamily  Set = 1<<Jinja | 1<<Twig
+	filenameReason   = "conventional filename"
+	extensionReason  = "extension"
+	manpageExtension = "man"
+)
+
+var (
+	cFamily        Set = NewSet(C, CPP, ObjectiveC)
+	jsFamily       Set = NewSet(JavaScript, TypeScript, JSX, TSX)
+	tsFamily       Set = NewSet(TypeScript, TSX)
+	jsxFamily      Set = NewSet(JSX, TSX)
+	shellFamily    Set = NewSet(Shell, Bash, Zsh)
+	schemeFamily   Set = NewSet(Scheme, Racket)
+	templateFamily Set = NewSet(Jinja, Twig)
 )
 
 // AnalyzePath examines only the final path component, with either path separator.
-// Matching is case-sensitive; directory names do not establish a language.
+// Filenames are case-sensitive; extensions are case-insensitive.
 func AnalyzePath(path string) Context {
-	if len(path) > MaxBytes {
+	const maxPathBytes = 64 * 1024
+	if len(path) > maxPathBytes {
 		return Context{}
 	}
 	if i := strings.LastIndexAny(path, "/\\"); i >= 0 {
@@ -25,110 +30,106 @@ func AnalyzePath(path string) Context {
 	}
 	switch path {
 	case "Gemfile", "Rakefile", "Guardfile", "Vagrantfile", "Brewfile", "Podfile", "Capfile", "Appraisals", "Dangerfile", "Steepfile", "Snapfile", ".pryrc", ".simplecov":
-		return Context{1 << Ruby, filenameReason}
+		return Context{Candidates: NewSet(Ruby), Reason: filenameReason}
 	case ".bashrc", ".bash_profile", ".bash_aliases", ".bash_logout", ".bash_functions", "bashrc", "bash_profile", "bash_aliases", "bash_logout":
-		return Context{1 << Bash, filenameReason}
+		return Context{Candidates: NewSet(Bash), Reason: filenameReason}
 	case ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", "zshrc", "zprofile", "zshenv", "zlogin", "zlogout":
-		return Context{1 << Zsh, filenameReason}
+		return Context{Candidates: NewSet(Zsh), Reason: filenameReason}
 	case ".profile", "profile", ".xinitrc", "xinitrc", ".xsession", "xsession", ".envrc", ".flaskenv", ".kshrc", "kshrc", ".cshrc", "cshrc", ".login", "login", "PKGBUILD", ".tmux.conf", "tmux.conf":
-		return Context{1 << Shell, filenameReason}
+		return Context{Candidates: NewSet(Shell), Reason: filenameReason}
 	case "cpanfile", "Rexfile", ".latexmkrc", "latexmkrc":
-		return Context{1 << Perl, filenameReason}
+		return Context{Candidates: NewSet(Perl), Reason: filenameReason}
 	case "SConstruct", "SConscript", ".gclient", "DEPS":
-		return Context{1 << Python, filenameReason}
+		return Context{Candidates: NewSet(Python), Reason: filenameReason}
 	case ".luacheckrc", ".busted":
-		return Context{1 << Lua, filenameReason}
+		return Context{Candidates: NewSet(Lua), Reason: filenameReason}
 	}
+	context := Context{Candidates: lookupPath(filenameRegistry[:], path), Reason: filenameReason}
+	if context.Candidates.Empty() {
+		context = extensionContext(path)
+	}
+	if context.Candidates.Len() > 1 {
+		context.heuristic = pathHeuristic(path)
+	}
+	return context
+}
+
+func extensionContext(path string) Context {
+	if strings.HasSuffix(path, ".C") {
+		return Context{Candidates: NewSet(CPP), Reason: extensionReason}
+	}
+	if strings.HasSuffix(path, ".H") {
+		return Context{Candidates: cFamily, Reason: extensionReason}
+	}
+	path = strings.ToLower(path)
 	if strings.HasSuffix(path, ".h.in") {
-		return Context{cFamily, extensionReason}
+		return Context{Candidates: cFamily, Reason: extensionReason}
 	}
 	if strings.HasSuffix(path, ".js.frag") {
-		return Context{1 << JavaScript, extensionReason}
+		return Context{Candidates: NewSet(JavaScript), Reason: extensionReason}
 	}
 	if strings.HasSuffix(path, ".dll.config") || strings.HasSuffix(path, ".exe.config") {
-		return Context{1 << XML, extensionReason}
+		return Context{Candidates: NewSet(XML), Reason: extensionReason}
 	}
 	i := strings.LastIndexByte(path, '.')
+	for dot := strings.IndexByte(path, '.'); dot >= 0 && dot < i; {
+		if candidates := lookupPath(extensionRegistry[:], path[dot:]); !candidates.Empty() {
+			return Context{Candidates: candidates, Reason: extensionReason}
+		}
+		next := strings.IndexByte(path[dot+1:], '.')
+		if next < 0 {
+			break
+		}
+		dot += next + 1
+	}
 	if i < 0 {
 		return Context{}
 	}
-	var s Set
-	switch path[i:] {
-	case ".py", ".pyw", ".pyi", ".gyp", ".gypi":
-		s = 1 << Python
-	case ".rb", ".rake", ".rbi", ".jbuilder", ".rabl", ".gemspec", ".ru", ".builder", ".podspec":
-		s = 1 << Ruby
-	case ".go":
-		s = 1 << Go
-	case ".rs":
-		s = 1 << Rust
-	case ".java", ".jsh":
-		s = 1 << Java
-	case ".c":
-		s = 1 << C
-	case ".cc", ".cpp", ".cxx", ".hpp", ".C", ".hh", ".hxx", ".h++", ".cp", ".c++", ".inl", ".ipp", ".tpp", ".txx", ".ixx", ".cppm", ".ino":
-		s = 1 << CPP
-	case ".h", ".H", ".re":
-		s = cFamily
-	case ".m":
-		s = 1<<ObjectiveC | 1<<MATLAB
-	case ".js", ".mjs", ".cjs", ".es", ".es6", ".xsjs", ".xsjslib", ".jscad", ".jsb":
-		s = 1 << JavaScript
-	case ".ts", ".mts", ".cts":
-		s = 1 << TypeScript
-	case ".jsx":
-		s = 1 << JSX
-	case ".tsx":
-		s = 1 << TSX
-	case ".sh", ".command":
-		s = shellFamily
-	case ".bash":
-		s = 1 << Bash
-	case ".zsh", ".zsh-theme":
-		s = 1 << Zsh
-	case ".fish":
-		s = 1 << Fish
-	case ".pl":
-		s = 1<<Perl | 1<<Raku | 1<<Prolog
-	case ".pm":
-		s = 1<<Perl | 1<<Raku
-	case ".al", ".ph", ".psgi":
-		s = 1 << Perl
-	case ".pro", ".prolog", ".yap":
-		s = 1 << Prolog
-	case ".raku", ".rakumod", ".p6", ".pm6", ".pl6":
-		s = 1 << Raku
-	case ".lisp", ".cl", ".lsp":
-		s = 1 << CommonLisp
-	case ".scm", ".ss":
-		s = schemeFamily
-	case ".sps", ".sld", ".sls", ".sch":
-		s = 1 << Scheme
-	case ".rkt", ".scrbl":
-		s = 1 << Racket
-	case ".clj", ".cljs", ".cljc", ".hic", ".cl2", ".boot":
-		s = 1 << Clojure
-	case ".php":
-		s = 1 << PHP
-	case ".lua", ".rockspec", ".pd_lua":
-		s = 1 << Lua
-	case ".cs", ".csx", ".cake", ".linq":
-		s = 1 << CSharp
-	case ".html", ".htm":
-		s = 1 << HTML
-	case ".xml", ".xsl", ".svg", ".xsd", ".xslt", ".xaml", ".axaml", ".gpx", ".csproj", ".vbproj", ".fsproj", ".vcxproj", ".wixproj", ".props", ".targets", ".proj", ".pubxml", ".resx", ".slnx", ".xmp", ".mjml", ".gmx", ".icls", ".ux":
-		s = 1 << XML
-	case ".jinja", ".j2", ".jinja2":
-		s = 1 << Jinja
-	case ".twig":
-		s = 1 << Twig
-	case ".erb":
-		s = 1 << ERB
-	case ".sql", ".mysql", ".pgsql", ".psql", ".ddl", ".dml":
-		s = 1 << SQL
+	s := extensionCandidates(path[i:])
+	if s.Empty() && manpageName(path) {
+		s = NewSet(Roff, RoffManpage)
 	}
-	if s == 0 {
+	if s.Empty() {
 		return Context{}
 	}
-	return Context{s, extensionReason}
+	return Context{Candidates: s, Reason: extensionReason}
+}
+
+func manpageName(path string) bool {
+	path = strings.TrimSuffix(path, ".in")
+	i := strings.LastIndexByte(path, '.')
+	if i < 0 || i == len(path)-1 {
+		return false
+	}
+	ext := path[i+1:]
+	if ext == "0p" || ext == "n" || ext == manpageExtension || ext == "mdoc" {
+		return true
+	}
+	if ext[0] < '1' || ext[0] > '9' || len(ext) > 1 && ext[1] >= '0' && ext[1] <= '9' {
+		return false
+	}
+	for _, c := range ext[1:] {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+func extensionCandidates(extension string) Set {
+	switch extension {
+	case ".jsx":
+		return NewSet(JSX)
+	case ".tsx":
+		return NewSet(TSX, XML)
+	case ".sh", ".command":
+		return shellFamily
+	case ".zsh-theme":
+		return NewSet(Zsh)
+	case ".psql", ".dml":
+		return NewSet(SQL)
+	case ".h", ".re":
+		return cFamily.Union(lookupPath(extensionRegistry[:], extension))
+	}
+	return lookupPath(extensionRegistry[:], extension)
 }

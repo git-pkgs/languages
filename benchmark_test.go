@@ -3,8 +3,11 @@ package languages_test
 import (
 	"bytes"
 	"github.com/git-pkgs/languages"
+	"strconv"
 	"testing"
 )
+
+const benchmarkBytes = 64 * 1024
 
 func benchmarkInputs() [][]byte {
 	var result [][]byte
@@ -32,7 +35,7 @@ func BenchmarkDetect1KB(b *testing.B) {
 	inputs := benchmarkInputs()
 	names := [...]string{"main.go", "script.rb", "main.c", "app.js", "family.pl", ""}
 	b.ReportAllocs()
-	b.SetBytes(languages.DefaultBytes)
+	b.SetBytes(int64(len(inputs[0])))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		index := i % len(inputs)
@@ -41,7 +44,7 @@ func BenchmarkDetect1KB(b *testing.B) {
 }
 
 func BenchmarkResultPath(b *testing.B) {
-	data := bytes.Repeat([]byte("# ordinary source line\n"), 64)[:languages.DefaultBytes]
+	data := bytes.Repeat([]byte("# ordinary source line\n"), 64)[:1024]
 	copy(data, "#!/usr/bin/python3\n# SPDX-License-Identifier: MIT\nprint(1)\n")
 	context := languages.AnalyzePath("script.py")
 	for _, mode := range []string{"extract", "intrinsic", "combined", "intrinsic-and-combined", "cached-results"} {
@@ -99,7 +102,7 @@ func BenchmarkParallel1KB(b *testing.B) {
 func BenchmarkAdversarial(b *testing.B) {
 	for _, pattern := range []string{"f\n", "\\\"", "a", "/*"} {
 		b.Run(pattern, func(b *testing.B) {
-			input := bytes.Repeat([]byte(pattern), languages.MaxBytes/len(pattern))
+			input := bytes.Repeat([]byte(pattern), benchmarkBytes/len(pattern))
 			var a languages.Analysis
 			b.ReportAllocs()
 			b.SetBytes(int64(len(input)))
@@ -107,6 +110,20 @@ func BenchmarkAdversarial(b *testing.B) {
 			for range b.N {
 				languages.Analyze(input, false, &a)
 				_ = a.Result()
+			}
+		})
+	}
+}
+
+func BenchmarkContentBudgets(b *testing.B) {
+	const source = "package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"hello\") }\n"
+	data := bytes.Repeat([]byte(source), benchmarkBytes/len(source)+1)
+	for _, size := range []int{128, 1024, 4096, 16384, benchmarkBytes} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = languages.Detect("main.go", data[:size])
 			}
 		})
 	}
