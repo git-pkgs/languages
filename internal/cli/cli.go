@@ -88,7 +88,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 func parseOptions(args []string, stderr io.Writer) (options, error) {
 	var opts options
 	flags := flag.NewFlagSet("languages", flag.ContinueOnError)
-	flags.SetOutput(stderr)
+	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.mode, "mode", combinedMode, "content, path, or combined")
 	flags.StringVar(&opts.name, "name", "", "optional contextual filename")
 	flags.Int64Var(&opts.limit, "bytes", languages.DefaultBytes, "maximum bytes to read per file; 0 reads the full file")
@@ -96,6 +96,10 @@ func parseOptions(args []string, stderr io.Writer) (options, error) {
 	flags.BoolVar(&opts.json, "json", false, "write a directory tree as JSON")
 	flags.IntVar(&opts.depth, "depth", -1, "directory display depth; 0 shows the root, -1 shows all")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			flags.SetOutput(stderr)
+			flags.Usage()
+		}
 		return opts, err
 	}
 	if opts.mode != "content" && opts.mode != pathMode && opts.mode != combinedMode {

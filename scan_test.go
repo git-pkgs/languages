@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -165,5 +167,44 @@ func TestScanErrorsAndCancellation(t *testing.T) {
 	cancel()
 	if tree, err := languages.Scan(ctx, files, languages.ScanOptions{}); !errors.Is(err, context.Canceled) || tree != nil {
 		t.Fatal(tree, err)
+	}
+}
+
+func TestScanConfinedRoot(t *testing.T) {
+	directory := t.TempDir()
+	inside := filepath.Join(directory, "inside")
+	if err := os.Mkdir(inside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(directory, "outside.rb")
+	if err := os.WriteFile(outside, []byte("#!/usr/bin/ruby\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(directory, "replacement")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	filename := filepath.Join(inside, "file")
+	if err := os.WriteFile(filename, []byte("original\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(inside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	tree, err := languages.Scan(context.Background(), root.FS(), languages.ScanOptions{Exclude: func(name string, _ fs.DirEntry) bool {
+		if name == "file" {
+			if err := os.Rename(filename, filepath.Join(directory, "original")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(link, filename); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return false
+	}})
+	if err == nil || tree != nil {
+		t.Fatalf("scan escaped root: tree=%v error=%v", tree, err)
 	}
 }

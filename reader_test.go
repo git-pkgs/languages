@@ -173,3 +173,35 @@ func TestAnalyzeReaderAllocations(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyzeReaderDeclarations(t *testing.T) {
+	const module = "module example.org/project\nrequire (\n example.org/library v1.0.0\n)\n"
+	for _, test := range []struct {
+		name, header, body    string
+		language              languages.Language
+		conflict, statistical bool
+	}{
+		{"shebang", "#!/usr/bin/ruby\n", "puts 'hello'\n", languages.Ruby, false, false},
+		{"modeline", "# -*- ruby -*-\n", "puts 'hello'\n", languages.Ruby, false, false},
+		{"conflict", "#!/usr/bin/ruby\n", "use strict;\n", languages.Unknown, true, false},
+		{"wrapper", "#!/bin/sh\nexec python3 \"$0\"\n", "print('hello')\n", languages.Python, false, false},
+		{"unknown wrapper", "#!/bin/sh\nexec unknown \"$0\"\n", module, languages.GoModule, false, true},
+		{"suppressed modeline", "# -*- ruby -*-\nUseVimball\n", module, languages.GoModule, false, true},
+		{"no declaration", "", module, languages.GoModule, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := []byte(test.header + strings.Repeat("\n", 5) + strings.Repeat(test.body, 8000))
+			for _, chunk := range []int{7, 32768} {
+				var got languages.Analysis
+				reader := chunkReader{bytes.NewReader(data), chunk}
+				if err := languages.AnalyzeReader(context.Background(), reader, languages.ReadOptions{}, &got); err != nil {
+					t.Fatal(err)
+				}
+				result := got.Result()
+				if result.Language != test.language || result.Conflict != test.conflict || result.Statistical != test.statistical || got.Bytes != int64(len(data)) || got.Prefix {
+					t.Fatalf("chunk %d: bytes=%d prefix=%t result=%+v", chunk, got.Bytes, got.Prefix, result)
+				}
+			}
+		})
+	}
+}

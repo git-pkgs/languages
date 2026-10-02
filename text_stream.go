@@ -21,6 +21,7 @@ type modelineMatch struct {
 type textStream struct {
 	analysis               Analysis
 	classifier             classifier.Stream
+	declared               bool
 	heuristics             [heuristicBytes]byte
 	heuristicSize          int
 	prefix                 [utf8BOMBytes]byte
@@ -59,7 +60,9 @@ func (s *textStream) reset() {
 }
 
 func (s *textStream) write(data []byte, sourceAt func(int) uint64) {
-	s.classifier.Write(data)
+	if !s.declared {
+		s.classifier.Write(data)
+	}
 	s.heuristicSize += copy(s.heuristics[s.heuristicSize:], data)
 	if s.ready {
 		s.content(data, sourceAt)
@@ -111,6 +114,10 @@ func (s *textStream) content(data []byte, sourceAt func(int) uint64) {
 		position += len(line) + 1
 		s.lineStart = sourceAt(position)
 		s.lineNumber++
+		if s.lineNumber == modelineLines {
+			// Wrappers and Vimball suppression can change declarations within the header.
+			s.declared = s.header.finish(false) >= 0 || s.modelineResult(false).language != Unknown
+		}
 		s.resetLine()
 		data = rest
 	}
@@ -249,11 +256,11 @@ func (s *textStream) finish(complete bool, heuristic uint16) Analysis {
 	if mode := s.modelineResult(complete); mode.language != Unknown {
 		s.prepend(Match{Rule: uint16(len(rules) + len(interpreterRules) + int(mode.language) - 1), Offset: mode.offset})
 	}
-	s.classifier.Finish()
 	s.analysis.Prefix = !complete
 	if s.analysis.hasDeclaration() {
 		s.analysis.classification = classifier.Analysis{}
 	} else {
+		s.classifier.Finish()
 		analyzeHeuristics(s.heuristics[:s.heuristicSize], &s.analysis, heuristic)
 	}
 	return s.analysis

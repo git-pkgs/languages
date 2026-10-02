@@ -55,10 +55,11 @@ func TestHeuristicScannerMatchesRegexp(t *testing.T) {
 	for i, pattern := range heuristicPatterns {
 		compiled[i] = regexp.MustCompile(pattern)
 	}
-	scratch := scan.NewScratch(sharedHeuristics.database)
+	database := sharedHeuristics().database
+	scratch := scan.NewScratch(database)
 	for _, input := range inputs {
 		var matched [len(heuristicPatterns)]bool
-		if err := sharedHeuristics.database.Scan(input, scratch, func(match scan.Match) error {
+		if err := database.Scan(input, scratch, func(match scan.Match) error {
 			matched[match.ID] = true
 			return nil
 		}); err != nil {

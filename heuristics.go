@@ -32,7 +32,7 @@ type heuristicScanner struct {
 	scratch  sync.Pool
 }
 
-var sharedHeuristics = compileHeuristics(nil)
+var sharedHeuristics = sync.OnceValue(func() *heuristicScanner { return compileHeuristics(nil) })
 
 var groupHeuristics = func() [len(heuristicGroups)]func() *heuristicScanner {
 	var scanners [len(heuristicGroups)]func() *heuristicScanner
@@ -71,9 +71,11 @@ func analyzeHeuristics(data []byte, dst *Analysis, selection uint16) {
 		return
 	}
 	data = data[:min(len(data), heuristicBytes)]
-	scanner := sharedHeuristics
+	var scanner *heuristicScanner
 	first, end := 0, len(heuristicGroups)
-	if selection != allHeuristics {
+	if selection == allHeuristics {
+		scanner = sharedHeuristics()
+	} else {
 		first, end = int(selection)-1, int(selection)
 		scanner = groupHeuristics[first]()
 	}

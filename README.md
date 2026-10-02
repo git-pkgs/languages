@@ -266,7 +266,12 @@ large as the read limit.
 In Go, `Scan` accepts an `fs.FS`. Add `context` and `os` to your imports:
 
 ```go
-tree, err := languages.Scan(context.Background(), os.DirFS("project"), languages.ScanOptions{})
+root, err := os.OpenRoot("project")
+if err != nil {
+    panic(err)
+}
+defer root.Close()
+tree, err := languages.Scan(context.Background(), root.FS(), languages.ScanOptions{})
 if err != nil {
     panic(err)
 }
@@ -276,8 +281,15 @@ if api, ok := tree.Subtree("api"); ok {
 }
 ```
 
-Use `os.DirFS("project/api")` or `fs.Sub` to scan only a subdirectory. Set
-`ScanOptions.Bytes` for a read budget. To exclude files or directories, supply
+Use `os.OpenRoot("project/api")` or `fs.Sub(root.FS(), "api")` to scan only a
+subdirectory. `os.Root` prevents path and symlink traversal outside its root on
+native platforms. Go's `js` target cannot guarantee this protection against
+concurrent symlink changes.
+The filesystem supplied to `Scan` determines confinement: skipping symlink
+entries does not protect against files replaced after directory enumeration,
+and `os.DirFS` and `fs.Sub` do not add that protection.
+
+Set `ScanOptions.Bytes` for a read budget. To exclude files or directories, supply
 `ScanOptions.Exclude` with the `io/fs` import. It receives root-relative paths;
 returning true for a directory skips its contents:
 
