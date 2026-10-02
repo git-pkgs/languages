@@ -29,6 +29,8 @@ func TestCLI(t *testing.T) {
 		{[]string{"-name", "example.1ssl"}, ".TH EXAMPLE 1\n.SH NAME\nexample\n", "Roff Manpage", false},
 		{[]string{"-name", "script.py"}, "#!/usr/bin/env -vS python3 -u\npass\n", "Python", false},
 		{[]string{"-name", "script.py"}, "\xff\xfep\x00a\x00s\x00s\x00\n\x00", "Python", false},
+		{[]string{"-name", "api.json"}, `{"openapi":"3.1.0","info":{"title":"Example"}}`, "OASv3-json", false},
+		{[]string{"-name", ".releaserc"}, "branches:\n  - main\nplugins: []\n", "YAML", false},
 	} {
 		var out bytes.Buffer
 		if err := cli.Run(tt.args, strings.NewReader(tt.input), &out, &out); err != nil {

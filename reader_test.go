@@ -205,3 +205,49 @@ func TestAnalyzeReaderDeclarations(t *testing.T) {
 		})
 	}
 }
+
+func TestAnalyzeReaderFilename(t *testing.T) {
+	for _, test := range []struct{ name, source string }{
+		{"main.go", "package main\nfunc main() {}\n"},
+		{"api.json", `{"openapi":"3.1.0","info":{"title":"Example"}}`},
+		{"settings.json", `{"name":"Ada","enabled":true}`},
+		{"app.ts", "export const count: number = 1;\n"},
+		{".releaserc", "branches:\n  - main\nplugins: []\n"},
+		{"source", "module example.org/project\nrequire (\n example.org/library v1.0.0\n)\n"},
+		{"wrong.py", "#!/usr/bin/ruby\nputs 'hello'\n"},
+		{"data.go", "\x00binary"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, options := range []languages.ReadOptions{
+				{Filename: test.name}, {Filename: test.name, Bytes: 16}, {Filename: test.name, Prefix: true},
+			} {
+				data := []byte(test.source)
+				assertNamedReader(t, data, options)
+				assertNamedReader(t, encodeSource(test.source, 2, binary.LittleEndian), options)
+			}
+		})
+	}
+}
+
+func assertNamedReader(t *testing.T, data []byte, options languages.ReadOptions) {
+	t.Helper()
+	length, complete := len(data), !options.Prefix
+	if options.Bytes > 0 && options.Bytes <= int64(length) {
+		length, complete = int(options.Bytes), false
+	}
+	var want languages.Analysis
+	languages.Analyze(data[:length], complete, &want)
+	for _, chunk := range []int{1, 511} {
+		var got languages.Analysis
+		reader := chunkReader{bytes.NewReader(data), chunk}
+		if err := languages.AnalyzeReader(context.Background(), reader, options, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Result() != want.Result() || got.Detect(options.Filename) != want.Detect(options.Filename) || got.Bytes != want.Bytes || got.Prefix != want.Prefix || got.Binary != want.Binary || got.Signals != want.Signals || got.Count != want.Count {
+			t.Fatalf("options=%+v chunk=%d: got %+v, want %+v", options, chunk, got.Detect(options.Filename), want.Detect(options.Filename))
+		}
+		if reader.Len() != len(data)-length {
+			t.Fatalf("read beyond budget: %d unread, want %d", reader.Len(), len(data)-length)
+		}
+	}
+}

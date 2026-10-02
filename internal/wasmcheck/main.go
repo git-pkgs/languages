@@ -57,6 +57,13 @@ func main() {
 	if content.Prefix || content.Result().Language != languages.Python || content.Bytes != int64(len(modeline)) {
 		panic("large footer modeline not detected")
 	}
+	const api = `{"openapi":"3.1.0","info":{"title":"Example"}}`
+	if err := languages.AnalyzeReader(context.Background(), strings.NewReader(api), languages.ReadOptions{Filename: "api.json"}, &content); err != nil {
+		panic(err)
+	}
+	if content.Detect("api.json").Language != languages.OASv3Json {
+		panic("reader lost filename heuristic")
+	}
 	vim := strings.Repeat("# header\n", headerLines) + "# vim: ft=python" + strings.Repeat("\u2000", modelineSpaces) + "\n"
 	if err := languages.AnalyzeReader(context.Background(), strings.NewReader(vim), languages.ReadOptions{}, &content); err != nil {
 		panic(err)

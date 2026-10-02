@@ -18,13 +18,15 @@ const (
 type ReadOptions struct {
 	Bytes  int64 // Zero reads to EOF; positive values set an exact read budget.
 	Prefix bool  // The reader contains a prefix even if it reaches EOF.
+	// Filename limits extension heuristics to this name; empty evaluates all groups.
+	Filename string
 }
 
 // AnalyzeReader reads content with bounded memory. Reaching a byte budget without
 // EOF leaves Prefix true. Errors clear dst. Cancellation is checked between reads;
 // it cannot interrupt an io.Reader blocked inside Read.
 func AnalyzeReader(ctx context.Context, reader io.Reader, options ReadOptions, dst *Analysis) error {
-	return analyzeReader(ctx, reader, options, dst, allHeuristics, -1)
+	return analyzeReader(ctx, reader, options, dst, -1)
 }
 
 var readerStreams = sync.Pool{New: func() any { return new(readerStream) }}
@@ -39,7 +41,7 @@ type readerStream struct {
 	started, binary bool
 }
 
-func analyzeReader(ctx context.Context, reader io.Reader, options ReadOptions, dst *Analysis, heuristic uint16, size int64) error {
+func analyzeReader(ctx context.Context, reader io.Reader, options ReadOptions, dst *Analysis, size int64) error {
 	*dst = Analysis{}
 	if options.Bytes < 0 {
 		return errors.New("bytes must be zero or greater")
@@ -52,6 +54,10 @@ func analyzeReader(ctx context.Context, reader io.Reader, options ReadOptions, d
 		return err
 	}
 	complete = (complete || size >= 0 && count == size) && !options.Prefix
+	heuristic := allHeuristics
+	if options.Filename != "" {
+		heuristic = AnalyzePath(options.Filename).heuristic
+	}
 	*dst = s.finish(complete, heuristic)
 	dst.Bytes = count
 	return nil

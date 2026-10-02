@@ -61,8 +61,7 @@ func analyzeFile(ctx context.Context, fsys fs.FS, name string, limit int64, anal
 		_ = file.Close()
 		return 0, statErr
 	}
-	pathContext := AnalyzePath(name)
-	readErr := analyzeReader(ctx, file, ReadOptions{Bytes: limit}, analysis, pathContext.heuristic, info.Size())
+	readErr := analyzeReader(ctx, file, ReadOptions{Bytes: limit, Filename: name}, analysis, info.Size())
 	closeErr := file.Close()
 	if readErr != nil {
 		return 0, readErr

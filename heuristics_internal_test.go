@@ -2,6 +2,7 @@ package languages
 
 import (
 	"bytes"
+	"context"
 	"regexp"
 	"strings"
 	"testing"
@@ -32,10 +33,22 @@ func TestDetectEveryHeuristicGroup(t *testing.T) {
 						if got, want := Detect(name, []byte(input)), analyses[i].Detect(name); got != want {
 							t.Fatalf("%s %q: got %+v, want %+v", name, input, got, want)
 						}
+						assertReaderHeuristic(t, name, input, analyses[i].Detect(name))
 					}
 				}
 			}
 		})
+	}
+}
+
+func assertReaderHeuristic(t *testing.T, name, input string, want Result) {
+	t.Helper()
+	var analysis Analysis
+	if err := AnalyzeReader(context.Background(), strings.NewReader(input), ReadOptions{Filename: name, Prefix: true}, &analysis); err != nil {
+		t.Fatal(err)
+	}
+	if got := analysis.Detect(name); got != want {
+		t.Fatalf("reader %s %q: got %+v, want %+v", name, input, got, want)
 	}
 }
 

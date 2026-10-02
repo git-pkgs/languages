@@ -59,7 +59,8 @@ func detectFile(ctx context.Context, name string) (languages.Result, error) {
     defer file.Close()
 
     var content languages.Analysis
-    if err := languages.AnalyzeReader(ctx, file, languages.ReadOptions{}, &content); err != nil {
+    options := languages.ReadOptions{Filename: name}
+    if err := languages.AnalyzeReader(ctx, file, options, &content); err != nil {
         return languages.Result{}, err
     }
     return content.Detect(name), nil
@@ -73,6 +74,11 @@ reader contains truncated input.
 
 Read errors and cancellation clear the result. Cancellation is checked between
 reads and cannot interrupt a reader blocked inside `Read`.
+
+Set `ReadOptions.Filename` when the result will be detected under one filename.
+This limits extension heuristics to that name without changing content evidence.
+Call `content.Detect(name)` to combine the analysis with the filename. Leave
+`Filename` empty to retain extension heuristics for reuse under different names.
 
 ## Handle the result
 

@@ -1,9 +1,11 @@
 package languages_test
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/git-pkgs/languages"
@@ -23,13 +25,19 @@ func TestStartupAllocations(t *testing.T) {
 			t.Fatal(got)
 		}
 	}
+	var analysis languages.Analysis
+	if err := languages.AnalyzeReader(context.Background(), strings.NewReader("package main\n"), languages.ReadOptions{Filename: "main.go"}, &analysis); err != nil {
+		t.Fatal(err)
+	}
+	if got := analysis.Detect("main.go"); got.Language != languages.Go {
+		t.Fatal(got)
+	}
 	const startupBudget = 16 << 20
 	var memory runtime.MemStats
 	runtime.ReadMemStats(&memory)
 	if memory.TotalAlloc > startupBudget {
 		t.Fatalf("startup and unambiguous detection allocated %d bytes, budget %d", memory.TotalAlloc, startupBudget)
 	}
-	var analysis languages.Analysis
 	languages.Analyze([]byte(`{"openapi":"3.1.0"}`), true, &analysis)
 	if got := analysis.Detect("api.json"); got.Language != languages.OASv3Json {
 		t.Fatal(got)

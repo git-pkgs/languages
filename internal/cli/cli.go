@@ -141,7 +141,11 @@ func runFile(opts options, stdin io.Reader, stdout io.Writer) error {
 			defer func() { _ = f.Close() }()
 			reader = f
 		}
-		err := languages.AnalyzeReader(context.Background(), reader, languages.ReadOptions{Bytes: opts.limit, Prefix: opts.prefix}, &a)
+		readOptions := languages.ReadOptions{Bytes: opts.limit, Prefix: opts.prefix}
+		if opts.mode == combinedMode {
+			readOptions.Filename = opts.name
+		}
+		err := languages.AnalyzeReader(context.Background(), reader, readOptions, &a)
 		if err != nil {
 			return err
 		}
