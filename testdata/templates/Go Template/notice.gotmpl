@@ -1,0 +1,3 @@
+Hello {{.Recipient}},
+{{with .Invoice}}Your invoice {{.Number}} is ready.{{end}}
+{{range $index, $line := .Lines}}{{$index}}: {{$line}}{{end}}

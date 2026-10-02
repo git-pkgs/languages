@@ -337,6 +337,13 @@ Detection matches byte patterns and token frequencies without validating syntax.
 Comment and string handling is partial, including for heredocs. Embedded
 languages, minified code, and short fragments may be missed or misidentified.
 
+Go-template dot fields such as `{{.Title}}` and named `define`, `template`, or
+`block` actions select Go Template in text, HTML, and XML, including with `.html`
+and `.xml` filenames. HTML templates can include JavaScript. Other source-language
+rules and explicit declarations take precedence. Shared expressions such as
+`{{title}}` do not identify a template language on their own; custom delimiters
+are not recognized.
+
 Language metadata, extension heuristics, and classifier training samples come
 from [Linguist]. Extension heuristics inspect the first 50 KiB through
 [scan](https://github.com/git-pkgs/scan). Syntax rules and the token classifier

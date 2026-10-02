@@ -31,6 +31,8 @@ func TestCLI(t *testing.T) {
 		{[]string{"-name", "script.py"}, "\xff\xfep\x00a\x00s\x00s\x00\n\x00", "Python", false},
 		{[]string{"-name", "api.json"}, `{"openapi":"3.1.0","info":{"title":"Example"}}`, "OASv3-json", false},
 		{[]string{"-name", ".releaserc"}, "branches:\n  - main\nplugins: []\n", "YAML", false},
+		{[]string{"-name", "page.html"}, "<!DOCTYPE html>\n<html><p>{{.Title}}</p></html>", "Go Template", false},
+		{[]string{"-mode", "content"}, "<p>{{.Title}}</p>", "Go Template", false},
 	} {
 		var out bytes.Buffer
 		if err := cli.Run(tt.args, strings.NewReader(tt.input), &out, &out); err != nil {

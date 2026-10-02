@@ -47,6 +47,8 @@ func assertTextStream(t *testing.T, data []byte, chunk int, complete bool) {
 }
 
 func FuzzTextStream(f *testing.F) {
+	f.Add([]byte("<!DOCTYPE html>\n<html>{{/* ignored */}}{{.Title}}</html>"), uint8(1), true)
+	f.Add([]byte("{{define \"page\"}}{{printf \"}}\" .Title}}{{end}}"), uint8(7), false)
 	for _, source := range []string{"#!/bin/sh\nexec ruby \"$0\"\n", "\xef\xbb\xbf#!/usr/bin/python3\n", "# vim: ft=ruby\n", "package main\nfunc main() {}\n"} {
 		f.Add([]byte(source), uint8(1), true)
 	}

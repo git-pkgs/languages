@@ -178,7 +178,7 @@ func (a *Analysis) Result() Result {
 		r.Language = JavaScript
 		r.Candidates = NewSet(JavaScript)
 	}
-	if r.Conflict || r.Confidence == High || a.hasDeclaration() {
+	if r.Conflict || r.Confidence == High || r.Language == GoTemplate || a.hasDeclaration() {
 		return r
 	}
 	if r.Confidence == Medium && a.classification.Tokens < minimumOverrideTokens {
@@ -193,6 +193,9 @@ func (a *Analysis) Result() Result {
 func (a *Analysis) ruleResult() Result {
 	if a.Count == 0 {
 		return Result{Confidence: None}
+	}
+	if a.Signals[a.Count-1].Rule == uint16(goTemplateRule) {
+		return Result{Language: GoTemplate, Candidates: NewSet(GoTemplate), Confidence: Medium}
 	}
 	var scores [LanguageCount]uint16
 	var counts [LanguageCount]uint8
@@ -304,12 +307,8 @@ func Combine(a *Analysis, c Context) Result {
 		c.Candidates.add(r.Language)
 	}
 	intrinsic := a.ruleResult()
-	if a.declarationConflict(c.Candidates) {
-		intrinsic.Candidates = intrinsic.Candidates.Union(c.Candidates)
-		intrinsic.Language = Unknown
-		intrinsic.Conflict = true
-		intrinsic.Confidence = Low
-		return intrinsic
+	if result, ok := a.contentContext(intrinsic, c.Candidates); ok {
+		return result
 	}
 	if intrinsic.Language != XML {
 		if heuristic := a.heuristicResult(c); !heuristic.Candidates.Empty() {
@@ -366,6 +365,20 @@ func Combine(a *Analysis, c Context) Result {
 	r.Conflict = true
 	r.Confidence = Low
 	return r
+}
+
+func (a *Analysis) contentContext(intrinsic Result, candidates Set) (Result, bool) {
+	if a.declarationConflict(candidates) {
+		intrinsic.Candidates = intrinsic.Candidates.Union(candidates)
+		intrinsic.Language = Unknown
+		intrinsic.Conflict = true
+		intrinsic.Confidence = Low
+		return intrinsic, true
+	}
+	if intrinsic.Language == GoTemplate && candidates.overlaps(NewSet(GoTemplate, HTML, XML)) {
+		return intrinsic, true
+	}
+	return Result{}, false
 }
 
 func xmlContext(result Result, candidates Set) (Result, bool) {

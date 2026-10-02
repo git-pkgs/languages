@@ -22,6 +22,7 @@ type textStream struct {
 	analysis               Analysis
 	classifier             classifier.Stream
 	declared               bool
+	templates              templateStream
 	heuristics             [heuristicBytes]byte
 	heuristicSize          int
 	prefix                 [utf8BOMBytes]byte
@@ -60,6 +61,7 @@ func (s *textStream) reset() {
 }
 
 func (s *textStream) write(data []byte, sourceAt func(int) uint64) {
+	s.templates.write(data, sourceAt)
 	if !s.declared {
 		s.classifier.Write(data)
 	}
@@ -260,6 +262,7 @@ func (s *textStream) finish(complete bool, heuristic uint16) Analysis {
 	if s.analysis.hasDeclaration() {
 		s.analysis.classification = classifier.Analysis{}
 	} else {
+		s.templates.finish(&s.analysis)
 		s.classifier.Finish()
 		analyzeHeuristics(s.heuristics[:s.heuristicSize], &s.analysis, heuristic)
 	}

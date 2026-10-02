@@ -65,7 +65,7 @@ func (s *lineSummary) initialize() {
 			i := word*wordBits + bits.TrailingZeros64(candidates)
 			candidates &= candidates - 1
 			r := &rules[i]
-			if r.weight == declaredWeight || r.prefix[0] != '~' && !rulePrefix(head, r) {
+			if r.weight == declaredWeight || r.id == goTemplateID || r.prefix[0] != '~' && !rulePrefix(head, r) {
 				s.candidates[word] &^= 1 << uint(i%wordBits)
 			}
 		}

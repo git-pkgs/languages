@@ -24,6 +24,7 @@ const (
 	phpOpenID        = "php.open"
 	hackOpenID       = "hack.open"
 	cIncludeID       = "c.include"
+	goTemplateID     = "go-template.action"
 )
 
 type rule struct {
@@ -171,4 +172,5 @@ var rules = [...]rule{
 	{"cpp.constexpr", "C++ constexpr declaration", NewSet(CPP), 6, "constexpr ", "", ""},
 	{"percent.comment", "MATLAB/Prolog comment", NewSet(MATLAB, Prolog), 3, "%", "", ""},
 	{goSwiftFuncID, "Go/Swift function declaration without parameters or return type", NewSet(Go, Swift), 6, funcPrefix, "(", ""},
+	{goTemplateID, "Go template action", NewSet(GoTemplate), strongWeight, "@go-template", "", ""},
 }

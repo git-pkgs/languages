@@ -1,0 +1,6 @@
+{{- define "layout" -}}
+<!DOCTYPE html>
+<html><head><title>{{block "title" .}}Shop{{end}}</title></head>
+<body>{{template "content" .}}</body></html>
+{{- end -}}
+{{define "content"}}<main>{{.Message}}</main>{{end}}

@@ -18,6 +18,7 @@ func main() {
 	}{
 		{"app.ts", javascript, languages.TypeScript, false},
 		{"app.js", javascript, languages.JavaScript, false},
+		{"page.html", "<!DOCTYPE html>\n<html><p>{{.Title}}</p></html>", languages.GoTemplate, false},
 		{"main.swift", "func value() -> Int { return 1 }\n", languages.Swift, false},
 		{"main.zig", "", languages.Zig, false},
 		{"", "module example.org/project\nrequire (\n example.org/library v1.0.0\n)\n", languages.GoModule, false},

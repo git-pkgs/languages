@@ -93,6 +93,9 @@ func analyzeTextBuffer(data []byte, complete bool, dst *Analysis, heuristic uint
 		offset = end + 1
 	}
 	if !dst.hasDeclaration() {
+		var templates templateStream
+		templates.write(data, func(i int) uint64 { return uint64(i) })
+		templates.finish(dst)
 		classifier.Analyze(data, &dst.classification)
 		analyzeHeuristics(data, dst, heuristic)
 	}
@@ -141,7 +144,7 @@ func record(dst *Analysis, seen *[2]uint64, index, offset int) {
 }
 
 func matches(line []byte, r *rule, terminated bool) bool {
-	if len(line) == 0 || r.weight == declaredWeight {
+	if len(line) == 0 || r.weight == declaredWeight || r.id == goTemplateID {
 		return false
 	}
 	if r.prefix == prologPrefix {

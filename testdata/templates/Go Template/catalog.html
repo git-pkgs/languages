@@ -1,0 +1,8 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>{{.Title}}</title></head>
+<body>
+  <ul>{{range .Products}}<li>{{.Name}}: {{printf "%.2f" .Price}}</li>{{end}}</ul>
+  {{if .Next}}<a href="{{.Next}}">Next page</a>{{else}}<p>Last page</p>{{end}}
+</body>
+</html>

@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html><head><title>Results</title></head><body>
+<script>
+function selectItem(name) {
+  console.log(name);
+}
+</script>
+{{range .Items}}<button onclick="selectItem(this.textContent)">{{.Name}}</button>{{end}}
+</body></html>
