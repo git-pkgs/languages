@@ -6,13 +6,11 @@ languages, confidence, and conflicting evidence.
 
 ## Install
 
-Add the module to your Go project:
-
 ```bash
 go get github.com/git-pkgs/languages
 ```
 
-## Detect a language
+## Detection
 
 Pass a filename and source bytes to `Detect`:
 
@@ -47,8 +45,7 @@ when the rest of the file is unavailable. Only the final path component is used;
 conventional filenames are case-sensitive and extensions are case-insensitive.
 The exceptions are `.C`, which selects C++, and `.H`, which has C-family candidates.
 
-For a file, use `AnalyzeReader` to read to EOF with bounded memory. Add `context`
-and `os` to your imports:
+For a file, use `AnalyzeReader` to read to EOF with bounded memory:
 
 ```go
 func detectFile(ctx context.Context, name string) (languages.Result, error) {
@@ -68,23 +65,22 @@ func detectFile(ctx context.Context, name string) (languages.Result, error) {
 ```
 
 Set `ReadOptions{Bytes: 1024}` to read at most 1 KiB; the default reads to EOF.
-The reader never consumes an extra byte to check for EOF, so reaching a budget
-without EOF leaves `content.Prefix` true. Use `ReadOptions{Prefix: true}` if the
-reader contains truncated input.
+The reader stops exactly at the budget, so reaching it before EOF leaves
+`content.Prefix` true. Use `ReadOptions{Prefix: true}` if the reader contains
+truncated input.
 
-Read errors and cancellation clear the result. Cancellation is checked between
-reads and cannot interrupt a reader blocked inside `Read`.
+Read errors and cancellation clear the result; cancellation is checked between
+reads, and a reader blocked inside `Read` continues until it returns.
 
 Set `ReadOptions.Filename` when the result will be detected under one filename.
 This limits extension heuristics to that name without changing content evidence.
 Call `content.Detect(name)` to combine the analysis with the filename. Leave
 `Filename` empty to retain extension heuristics for reuse under different names.
 
-## Handle the result
+## Results
 
-`Language` is `languages.Unknown` when no single language is selected. Check
-`Candidates` to distinguish an ambiguous result from one with no selection.
-Import `encoding/json` to display candidate names:
+`Language` is `languages.Unknown` when the result is ambiguous or empty. Check
+`Candidates` to distinguish an ambiguous result from an empty one:
 
 ```go
 result := languages.Detect("source.pl", nil)
@@ -109,8 +105,8 @@ The example prints `ambiguous: ["Perl","Raku","Prolog"]`. Content such as
 `result.Candidates.Has(languages.Perl)`, or count them with
 `result.Candidates.Len()`.
 
-`Language.String()` returns the name. `languages.Parse(name)` accepts canonical
-names and aliases without regard to case, including `common-lisp`.
+`Language.String()` returns the name, and `languages.Parse(name)` accepts
+canonical names and aliases regardless of case, including `common-lisp`.
 
 `Conflict` indicates disagreement between strong content evidence and the
 filename, or between a declaration and strong syntax evidence. For example, a
@@ -119,7 +115,7 @@ that is also valid TypeScript, can be narrowed by the filename.
 
 Confidence describes the evidence supporting the result:
 
-- `none`: no content or filename selection.
+- `none`: content and filename both unmatched.
 - `low`: a filename, weak syntax, statistical selection, or conflicting evidence.
 - `medium`: stronger syntax evidence.
 - `high`: a shebang or editor modeline, or multiple rules including a strong signal.
@@ -127,10 +123,11 @@ Confidence describes the evidence supporting the result:
 For a confidence threshold, compare
 `result.Confidence.Rank() >= languages.Medium.Rank()`. High confidence can
 have several candidates, so check `Language` as well when you need a single
-selection. Confidence is not a probability. `Statistical` is true when the
-selection comes from the token classifier; these results have low confidence.
+selection. Confidence is an ordinal rank rather than a probability.
+`Statistical` is true when the selection comes from the token classifier;
+these results have low confidence.
 
-## Reuse an analysis and inspect evidence
+## Analysis
 
 Use `Analyze` when you have the complete content, need matched rules, or want to
 detect the same content under several filenames:
@@ -152,8 +149,8 @@ for _, match := range content.Signals[:content.Count] {
 
 Pass `true` only when the supplied bytes are the complete file. Use `false` for
 a prefix with an unavailable suffix. `Detect` always treats content as a prefix.
-`content.Prefix` records whether the input is incomplete, and `content.Bytes`
-records the number of original bytes examined.
+`content.Prefix` records whether the input is incomplete; `content.Bytes` is
+the number of original bytes examined.
 
 Emacs and Vim modelines are checked in the first five lines. The last five lines
 are checked when `Analyze` or `AnalyzeReader` receives the complete file.
@@ -164,20 +161,17 @@ destination for each concurrent call. `Result` and `Detect` read the analysis
 without changing it or rescanning the source.
 
 Rule evidence contains an ID, description, candidate languages, and a byte
-offset into the original input. Statistical scores have no source offsets and
-do not appear in `Signals`. Keep cached analyses in memory: the default JSON
-encoder omits their internal classifier state.
+offset into the original input. Statistical scores lack source offsets and are
+omitted from `Signals`. Keep cached analyses in memory; JSON encoding drops
+their classifier state.
 
 ## Command line
-
-Install the CLI with Go:
 
 ```bash
 go install github.com/git-pkgs/languages/cmd/languages@latest
 ```
 
-Make sure your Go binary directory (`GOBIN`, or `$(go env GOPATH)/bin` when unset)
-is on your `PATH`. For a file, the CLI writes JSON and combines the filename with
+For a file, the CLI writes JSON and combines the filename with
 content by default. Pass a file, or pipe content to stdin and supply its name
 with `-name`:
 
@@ -209,9 +203,9 @@ The path-only example returns:
 }
 ```
 
-`language` is omitted when no single language is selected. Unknown, ambiguous,
-and conflicting results exit successfully, so scripts must inspect the
-JSON. Argument, file-reading, and output errors produce a nonzero exit status.
+`language` is omitted for ambiguous and empty results. Unknown, ambiguous,
+and conflicting results exit successfully, so scripts must inspect the JSON.
+Argument, file-reading, and output errors produce a nonzero exit status.
 
 The CLI reads full files and stdin to EOF by default. Set a read budget with
 `-bytes`, or use `-bytes 0` for full input. This command reads up to 1 KiB:
@@ -227,7 +221,7 @@ before reaching stdin, use `-prefix`:
 languages -prefix -name source.pl < exported-prefix
 ```
 
-## Directory breakdowns
+## Directories
 
 Pass a directory to see language totals for the whole tree and each subdirectory:
 
@@ -244,8 +238,8 @@ project/  Go 75.0%, TypeScript 25.0% (3 files, 4.0 KiB)
 └── web/  TypeScript 100.0% (1 file, 1.0 KiB)
 ```
 
-Each directory includes all descendant files. Percentages use full file sizes,
-even when detection reads only a prefix. Unknown, ambiguous, conflicting, and
+Each directory includes all descendant files, and percentages use full file
+sizes even when detection reads only a prefix. Unknown, ambiguous, conflicting, and
 binary files have separate totals and remain in the percentage denominator.
 `partial` counts files whose content exceeds the read limit.
 
@@ -269,7 +263,7 @@ files, and include untracked, ignored, vendored, and generated files. Directory
 scans use file sizes to identify complete input, including files exactly as
 large as the read limit.
 
-In Go, `Scan` accepts an `fs.FS`. Add `context` and `os` to your imports:
+In Go, `Scan` accepts an `fs.FS`:
 
 ```go
 root, err := os.OpenRoot("project")
@@ -288,16 +282,12 @@ if api, ok := tree.Subtree("api"); ok {
 ```
 
 Use `os.OpenRoot("project/api")` or `fs.Sub(root.FS(), "api")` to scan only a
-subdirectory. `os.Root` prevents path and symlink traversal outside its root on
-native platforms. Go's `js` target cannot guarantee this protection against
-concurrent symlink changes.
-The filesystem supplied to `Scan` determines confinement: skipping symlink
-entries does not protect against files replaced after directory enumeration,
-and `os.DirFS` and `fs.Sub` do not add that protection.
+subdirectory. For a mutable or untrusted directory, prefer `os.Root`; see the
+`Scan` documentation for confinement caveats.
 
-Set `ScanOptions.Bytes` for a read budget. To exclude files or directories, supply
-`ScanOptions.Exclude` with the `io/fs` import. It receives root-relative paths;
-returning true for a directory skips its contents:
+Set `ScanOptions.Bytes` for a read budget, and supply `ScanOptions.Exclude` to
+omit files or directories. It receives root-relative paths; returning true for
+a directory skips its contents:
 
 ```go
 options := languages.ScanOptions{
@@ -307,8 +297,9 @@ options := languages.ScanOptions{
 }
 ```
 
-Pass these options as the third argument to `Scan`. If a file cannot be read or
-the context is cancelled, the scan returns an error without a partial tree.
+Pass these options as the third argument to `Scan`; if a file read fails or
+the context is cancelled, the scan returns an error and discards the partial
+tree.
 
 If your application already traverses files, feed its analyses into a `Tree`
 instead of scanning again:
@@ -337,26 +328,19 @@ Detection matches byte patterns and token frequencies without validating syntax.
 Comment and string handling is partial, including for heredocs. Embedded
 languages, minified code, and short fragments may be missed or misidentified.
 
-Go-template dot fields such as `{{.Title}}` and named `define`, `template`, or
-`block` actions select Go Template in text, HTML, and XML, including with `.html`
-and `.xml` filenames. HTML templates can include JavaScript. Other source-language
-rules and explicit declarations take precedence. Shared expressions such as
-`{{title}}` do not identify a template language on their own; custom delimiters
-are not recognized.
+Go template actions such as `{{.Title}}` are detected in text and markup;
+custom delimiters are ignored.
 
-Language metadata, extension heuristics, and classifier training samples come
-from [Linguist]. Extension heuristics inspect the first 50 KiB through
-[scan](https://github.com/git-pkgs/scan). Syntax rules and the token classifier
-process all supplied content.
-
-Binary classification and encoding recognition use
-[magic](https://github.com/git-pkgs/magic). Binary content sets `Analysis.Binary`
-and produces no language selection.
+Language metadata and extension heuristics come from [Linguist], as do the
+classifier training samples. Extension heuristics inspect the first 50 KiB;
+syntax rules and the token classifier process all supplied content. Binary
+content sets `Analysis.Binary` and leaves the language unselected.
 
 BOM-marked UTF-16 and UTF-32 are decoded before language analysis. Evidence
 offsets refer to the original bytes, and a prefix may end inside a code
-point. Malformed BOM-marked input is rejected. Other non-UTF-8 input is analyzed
-as bytes when magic cannot classify it; detection quality may be lower.
+point. Malformed BOM-marked input is rejected. Other non-UTF-8 input is
+analyzed as raw bytes when its encoding is unrecognized; detection quality may
+be lower.
 
 ## License
 

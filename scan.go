@@ -16,7 +16,11 @@ type ScanOptions struct {
 
 // Scan summarizes regular files in fsys. Git metadata and symlinks are skipped.
 // Use fs.Sub to select a subtree. On an error no partial tree is returned.
-// For mutable directories, use os.Root.FS subject to its platform guarantees.
+//
+// Confinement depends on fsys: a file replaced after enumeration is opened
+// as-is, and os.DirFS and fs.Sub follow the replacement. For a mutable or
+// untrusted directory, pass os.Root.FS, subject to its documented platform
+// guarantees.
 func Scan(ctx context.Context, fsys fs.FS, options ScanOptions) (*Tree, error) {
 	if options.Bytes < 0 {
 		return nil, errors.New("bytes must be zero or greater")
