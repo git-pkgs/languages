@@ -2,7 +2,7 @@ module github.com/git-pkgs/languages
 
 go 1.26.0
 
-toolchain go1.26.8
+toolchain go1.26.10
 
 require (
 	github.com/git-pkgs/magic v0.5.0
