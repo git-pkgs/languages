@@ -5,6 +5,6 @@ go 1.26.0
 toolchain go1.26.10
 
 require (
-	github.com/git-pkgs/magic v0.5.0
+	github.com/git-pkgs/magic v0.6.0
 	github.com/git-pkgs/scan v0.1.1
 )
